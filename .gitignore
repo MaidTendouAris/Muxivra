@@ -1,0 +1,15 @@
+node_modules/
+out/
+release/
+.test-data/
+.runtime/
+resources/mpv/
+coverage/
+artifacts/
+example_media/
+.env
+.env.*
+*.log
+*.tsbuildinfo
+
+outputs/

@@ -1,0 +1,59 @@
+{
+  "name": "muxivra",
+  "version": "0.7.0",
+  "description": "本地媒体处理、批量转码与字幕工作台",
+  "main": "out/main/index.js",
+  "author": "Muxivra contributors",
+  "license": "GPL-3.0-only",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "npm run prepare:mpv && electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && electron-vite build",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "licenses": "node scripts/licenses.mjs",
+    "prepare:mpv": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-mpv.ps1",
+    "package:win": "npm run prepare:mpv && npm run build && npm run licenses && electron-builder --win=nsis --x64 --publish=never",
+    "package:dir": "npm run prepare:mpv && npm run build && npm run licenses && electron-builder --win --x64 --dir",
+    "smoke:desktop": "node scripts/desktop-smoke.mjs",
+    "smoke:player": "node scripts/player-smoke.mjs",
+    "smoke:parameters": "node scripts/parameters-smoke.mjs",
+    "smoke:ui": "node scripts/ui-smoke.mjs",
+    "smoke:mcp-setup": "node scripts/mcp-setup-smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@radix-ui/react-dialog": "1.1.23",
+    "@radix-ui/react-select": "2.3.7",
+    "@radix-ui/react-slot": "1.3.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "koffi": "3.3.2",
+    "lucide-react": "1.52.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^3.0.0",
+    "yauzl": "^3.2.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/yauzl": "^2.10.0",
+    "@vitejs/plugin-react": "5.1.2",
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "playwright": "^1.0.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5.9.0",
+    "vite": "7.3.6",
+    "vitest": "4.1.11"
+  }
+}

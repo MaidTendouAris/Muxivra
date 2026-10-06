@@ -1,0 +1,13 @@
+{
+  "version": "v0.41.0-1087-ge470f8986",
+  "platform": "win32-x64",
+  "release": "20260928",
+  "url": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260928/mpv-x86_64-20260928-git-e470f8986e.7z",
+  "archiveSha256": "6491ba670f836553fdd0d965c6e99ed8aa4053c1c79a5e4e30a1e127da64714a",
+  "executableSha256": "1156426aa36a2046bfdb2d772020f8dc2f50debc638b7cd0fe8fc977fe079b86",
+  "license": "GPL-3.0-or-later (mpv with GPLv3 FFmpeg dependencies)",
+  "mpvSource": "https://github.com/mpv-player/mpv/tree/e470f8986e",
+  "ffmpegSource": "https://github.com/FFmpeg/FFmpeg/tree/939c2c733",
+  "libplaceboSource": "https://code.videolan.org/videolan/libplacebo/-/tree/c42968d",
+  "buildSource": "https://github.com/shinchiro/mpv-winbuild-cmake/tree/05a60b3"
+}
