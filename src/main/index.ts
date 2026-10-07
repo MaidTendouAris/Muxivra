@@ -118,6 +118,9 @@ function registerIpc(): void {
   handle('cancel',id => service.cancel(z.string().uuid().parse(id))); handle('retry',id => service.retry(z.string().uuid().parse(id)))
   handle('pause',id=>service.pause(z.string().uuid().parse(id)));handle('resume',id=>service.resume(z.string().uuid().parse(id)))
   handle('moveJob',(id,direction)=>service.moveJob(z.string().uuid().parse(id),z.enum(['up','down','first','last']).parse(direction)))
+  handle('jobDetails',id=>service.job(z.string().uuid().parse(id)))
+  handle('deleteJobRecords',ids=>service.deleteJobRecords(z.array(z.string().uuid()).min(1).max(1000).parse(ids)))
+  handle('readLogPage',(id,offset)=>service.queue.logPage(z.string().uuid().parse(id),z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0).parse(offset)))
   handle('refreshHardware',()=>service.refreshHardware())
   handle('systemUsage',()=>service.usage.read())
   handle('detectEngine',() => service.detect())
@@ -146,7 +149,7 @@ function registerIpc(): void {
   handle('reveal',async path => {
     pathSchema.parse(path)
     const jobs = service.snapshot().jobs
-    if (!jobs.some(job => job.plan.outputPath === path || job.logPath === path) && !service.paths.files.has(path) && path !== service.dataPath && path !== service.enginePath) throw new Error('路径未获授权')
+    if (!jobs.some(job => job.plan.input.path === path || job.plan.outputPath === path || job.logPath === path) && !service.paths.files.has(path) && path !== service.dataPath && path !== service.enginePath) throw new Error('路径未获授权')
     if ((await stat(path)).isDirectory()) await shell.openPath(path); else shell.showItemInFolder(path)
   })
   handle('readLog',id => service.queue.log(z.string().uuid().parse(id)))

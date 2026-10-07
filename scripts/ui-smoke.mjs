@@ -92,7 +92,7 @@ try {
   await page.getByRole('status').filter({hasText:'正在关闭应用…'}).waitFor();assert.equal(await page.getByRole('dialog',{name:'退出 Muxivra',exact:true}).getByRole('button',{name:'关闭',exact:true}).isDisabled(),true)
   await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog',{name:'退出 Muxivra',exact:true}).isVisible(),true);await shot('exit-closing')
   await exited;closed=true
-  const persisted=JSON.parse(await readFile(join(root,'profile','jobs.json'),'utf8'));assert.equal(persisted.find(j=>j.id===jobs[2].id).status,'paused')
+  const historyRoot=join(root,'profile','job-history'),historyIndex=JSON.parse(await readFile(join(historyRoot,'index.json'),'utf8'));const persisted=(await Promise.all(historyIndex.pages.map(async name=>JSON.parse(await readFile(join(historyRoot,name),'utf8')).jobs))).flat();assert.equal(persisted.find(j=>j.id===jobs[2].id).status,'paused')
   assert.deepEqual(errors,[])
   const report={appVersion:version,executable:process.env.MUXIVRA_EXECUTABLE||'development',dropdownWheelAndThumbDrag:true,dropdownKeyboard:true,noScrollArrows:true,ordinaryTextNotSelectable:true,inputsEditable:true,nestedHardwareAndTaskCards:true,delayedImportSaveCancelFeedback:true,cancelWaitsForFinalStatus:true,trayCustomExit:true,exitCancelAndEscape:true,exitClosingFeedbackAndLock:true,noNativeExitDialog:true,themes:['dark','light'],minimumWindow:[1040,720],errors}
   await writeFile('artifacts/qa/ui-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2))

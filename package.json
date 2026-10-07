@@ -1,6 +1,6 @@
 {
   "name": "muxivra",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "本地媒体处理、批量转码与字幕工作台",
   "main": "out/main/index.js",
   "author": "Muxivra contributors",
@@ -23,7 +23,8 @@
     "smoke:player": "node scripts/player-smoke.mjs",
     "smoke:parameters": "node scripts/parameters-smoke.mjs",
     "smoke:ui": "node scripts/ui-smoke.mjs",
-    "smoke:mcp-setup": "node scripts/mcp-setup-smoke.mjs"
+    "smoke:mcp-setup": "node scripts/mcp-setup-smoke.mjs",
+    "smoke:tasks": "node scripts/task-history-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",

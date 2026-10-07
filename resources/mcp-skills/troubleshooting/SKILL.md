@@ -13,7 +13,9 @@ submit_jobs 返回初始 queued 状态及 ID。状态可能是 queued/running/pa
 - resume_job 恢复暂停项。move_job 仅支持未开始的等待项，direction 为 up/down/first/last，相对授权范围排序。
 - cancel_job 取消等待项可以立即结束；运行项先返回 cancelling = true，随后轮询 get_job，直到 cancelled 且 cancelling 消失。临时输出清理完才算完成；原文件不删除。
 - requestKey 用于相同批次重试。参数改变或真正重新创建取消/失败任务时用新键；同一键不同参数会被拒绝。重连后先查既有任务，不重复提交。
-- completed 才能报告输出成功。进度和速度来自实际 FFmpeg。elapsedMs 不包含暂停时间；estimatedRemainingMs 只有可计算时出现，estimateBasis 为 progress/history/unknown。没有估计值时说明正在估算，不编造时间。
+- completed 且 finishedAt 已记录后核对输出。进度和速度来自实际 FFmpeg。elapsedMs 不包含暂停时间；estimatedRemainingMs 只有可计算时出现，estimateBasis 为 progress/history/unknown。没有估计值时说明正在估算，不编造时间。
+
+任务历史保留最近 1000 条已结束记录，GUI 每页 50 条；未完成项保留。查看详细信息包含完整时间、参数、事件和分段日志。GUI 可删除记录及日志而保留媒体；MCP 没有删除记录工具。部分批次历史被删除/到期后旧 requestKey 会被拒绝，所有记录清除后不再保留去重关联。查询 ID 不存在时，不能直接推断任务未执行，应核对输出并征询用户目标。
 
 ## HTTP 与权限
 

@@ -10,6 +10,7 @@ const destroy=user.func('bool __stdcall DestroyWindow(uintptr_t window)')
 const setRegion=user.func('int __stdcall SetWindowRgn(uintptr_t window, uintptr_t region, bool redraw)')
 const gdi=koffi.load('gdi32.dll')
 const createRegion=gdi.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)')
+const createRoundRegion=gdi.func('uintptr_t __stdcall CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight)')
 const combineRegion=gdi.func('int __stdcall CombineRgn(uintptr_t destination, uintptr_t first, uintptr_t second, int mode)')
 const deleteObject=gdi.func('bool __stdcall DeleteObject(uintptr_t object)')
 export class NativePlayerSurface {
@@ -26,7 +27,7 @@ export class NativePlayerSurface {
     if(!position(this.handle,0,Math.round(rect.x*scale),Math.round(rect.y*scale),Math.round(rect.width*scale),Math.round(rect.height*scale),0x10|0x40))throw new Error('无法调整 mpv 播放区域')
     const width=Math.round(rect.width*scale),height=Math.round(rect.height*scale)
     const originX=Math.round(rect.x*scale),originY=Math.round(rect.y*scale)
-    const cuts=(rect.occlusions??[]).map(cut=>({left:Math.max(0,Math.round((rect.x+cut.x)*scale)-originX),top:Math.max(0,Math.round((rect.y+cut.y)*scale)-originY),right:Math.min(width,Math.round((rect.x+cut.x+cut.width)*scale)-originX),bottom:Math.min(height,Math.round((rect.y+cut.y+cut.height)*scale)-originY)})).filter(cut=>cut.right>cut.left&&cut.bottom>cut.top)
+    const cuts=(rect.occlusions??[]).map(cut=>({left:Math.round((rect.x+cut.x)*scale)-originX,top:Math.round((rect.y+cut.y)*scale)-originY,right:Math.round((rect.x+cut.x+cut.width)*scale)-originX,bottom:Math.round((rect.y+cut.y+cut.height)*scale)-originY,radius:Math.round((cut.radius??0)*scale)})).filter(cut=>cut.right>0&&cut.left<width&&cut.bottom>0&&cut.top<height&&cut.right>cut.left&&cut.bottom>cut.top)
     const key=JSON.stringify([width,height,cuts]);if(key===this.regionKey)return
     // Keep the native video visible; clip only actual DOM overlays. Windows
     // owns the final region after SetWindowRgn succeeds.
@@ -34,7 +35,7 @@ export class NativePlayerSurface {
     const region=createRegion(0,0,width,height);if(!region)throw new Error('无法创建播放窗口区域')
     let transferred=false
     try {
-      for(const cut of cuts){const exclusion=createRegion(cut.left,cut.top,cut.right,cut.bottom);if(!exclusion)throw new Error('无法创建遮挡区域');try {if(!combineRegion(region,region,exclusion,4))throw new Error('无法裁剪播放窗口区域')}finally{deleteObject(exclusion)}}
+      for(const cut of cuts){const exclusion=cut.radius?createRoundRegion(cut.left,cut.top,cut.right+1,cut.bottom+1,cut.radius*2,cut.radius*2):createRegion(cut.left,cut.top,cut.right,cut.bottom);if(!exclusion)throw new Error('无法创建遮挡区域');try {if(!combineRegion(region,region,exclusion,4))throw new Error('无法裁剪播放窗口区域')}finally{deleteObject(exclusion)}}
       if(!setRegion(this.handle,region,true))throw new Error('无法应用播放窗口区域')
       transferred=true;this.regionKey=key
     }finally{if(!transferred)deleteObject(region)}

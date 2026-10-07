@@ -40,7 +40,12 @@ export interface Job {
   error?: string; logPath: string; logTail: string; temporaryPath: string; outputSize?: number
   pausedFrom?: 'queued' | 'running'; elapsedMs?: number; estimatedRemainingMs?: number; estimateBasis?: 'progress' | 'history' | 'unknown'
   cancelling?: boolean
+  exitCode?: number | null; exitSignal?: string | null
+  events?: { at:string; type:string; message:string }[]
+  requestJobCount?: number; requestExpired?: boolean
+  executedArgs?:string[]
 }
+export interface JobLogPage { text:string; offset:number; nextOffset:number; totalBytes:number; hasMore:boolean }
 export interface Cue { id: string; startMs: number; endMs: number; text: string }
 export interface SubtitleDocument { id: string; sourcePath?: string; cues: Cue[] }
 export interface McpSettings {
@@ -77,6 +82,9 @@ export interface MuxivraApi {
   pause(id: string): Promise<Job>
   resume(id: string): Promise<Job>
   moveJob(id: string, direction: 'up' | 'down' | 'first' | 'last'): Promise<void>
+  jobDetails(id:string):Promise<Job>
+  deleteJobRecords(ids:string[]):Promise<number>
+  readLogPage(id:string,offset?:number):Promise<JobLogPage>
   refreshHardware(): Promise<void>
   systemUsage():Promise<import('./hardware').SystemUsage>
   retry(id: string): Promise<Job>

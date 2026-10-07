@@ -32,6 +32,7 @@ npm run smoke:player
 npm run smoke:parameters
 npm run smoke:ui
 npm run smoke:mcp-setup
+npm run smoke:tasks
 ```
 
 集成及桌面测试需要可调用的外部 FFmpeg，用于生成临时媒体。报告与截图保存到 `artifacts/qa/`，配置和数据在 `.test-data/` 中隔离。实际验收结果、安装版验证和下载测试开关见 [验收记录](VERIFICATION.md)。
@@ -44,7 +45,11 @@ npm run smoke:mcp-setup
 
 `npm run smoke:mcp-setup` 验证保存并复制完整提示词、凭据预览隐藏、保存失败不更新剪贴板、实际 MCP 连接、6 份指南、音频示例计划和当前引擎参数查询。设置 `MUXIVRA_CODEX_PATH` 为本机 Codex CLI 路径时，还会在独立 `CODEX_HOME` 中验证连接配置命令，保留其他服务器配置；不会修改用户的 Codex 配置或持久环境变量。
 
-`scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入五组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
+`npm run smoke:tasks` 使用 106 条合成旧记录和真实媒体副本验证三页历史、详情、完整 Unicode 日志、单条及跨页删除、媒体哈希保留和重启恢复，并单独执行一条真实 AAC 队列任务核对完整处理记录。合成历史不代表执行了 105 次转码。
+
+`scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入、任务历史六组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
+
+安装脚本默认执行全部六组；相关改动复验可用 `-Suites tasks` 等已定义名称选择检查，仍在独立临时安装中验证并卸载。
 
 内置指南位于 `resources/mcp-skills/<id>/SKILL.md`，由 `src/mcp/skills.ts` 导入并随安装包保留。调整请求字段、任务状态或引擎支持范围时，同步更新对应指南；参数参考直接来自共享定义。新增指南需要更新固定目录、连接入口和读取测试，不能将任意本机文件路径作为指南 ID。
 

@@ -1,3 +1,4 @@
+import { JobHistoryStore } from '../../src/core/jobs/history'
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest'
 import { mkdir, mkdtemp, writeFile, readFile, rm, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -20,7 +21,7 @@ let root: string, input: string, output: string, service: MediaService, host: Mc
 const clients: Client[]=[]
 async function waitJob(id: string, states = ['completed','failed','cancelled','interrupted']): Promise<Job> {
   const start=Date.now()
-  while(Date.now()-start<90000) { const job=service.queue.get(id);if(states.includes(job.status))return job;await new Promise(resolve=>setTimeout(resolve,50)) }
+  while(Date.now()-start<90000) { const job=service.queue.get(id),finished=['completed','failed','cancelled','interrupted'].includes(job.status);if(states.includes(job.status)&&(!finished||!!job.finishedAt&&!job.cancelling))return job;await new Promise(resolve=>setTimeout(resolve,50)) }
   throw new Error('等待任务超时')
 }
 async function freePort(): Promise<number> {const server=createServer();await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const number=(server.address() as {port:number}).port;await new Promise<void>(resolve=>server.close(()=>resolve()));return number}
@@ -97,7 +98,7 @@ describe('真实 FFmpeg 与共享队列',()=>{
     const jobs=await queue.submit(requests,'gui',undefined,async r=>service.plan(r))
     await queue.pause(jobs[0].id);await queue.move(jobs[2].id,'first');await queue.shutdown()
     const saved=queue.jobs.map(j=>j.id===jobs[1].id?{...j,status:'paused',pausedFrom:'running'}:j)
-    await writeFile(jobs[1].temporaryPath,'unfinished');await writeFile(join(data,'jobs.json'),JSON.stringify(saved))
+    await writeFile(jobs[1].temporaryPath,'unfinished');await new JobHistoryStore(data).write(saved as Job[])
     const recovered=new JobQueue(data);recovered.concurrency=0;await recovered.initialize()
     expect(recovered.list().map(j=>j.id)).toEqual([jobs[2].id,jobs[0].id,jobs[1].id])
     expect(recovered.get(jobs[0].id)).toMatchObject({status:'paused',pausedFrom:'queued'})
@@ -170,7 +171,7 @@ describe('真实 FFmpeg 与共享队列',()=>{
   it('重启恢复去重记录，运行中任务标记为中断',async()=>{
     await service.shutdown();const recovered=new MediaService(service.dataPath,service.enginePath);await recovered.initialize();await recovered.paths.grantFile(input);await recovered.paths.grantDirectory(output)
     const original=service.queue.jobs.find(job=>job.requestKey==='remux-batch')!;const duplicates=await recovered.submit([request('remux.mkv',{container:'mkv',video:'copy',audio:'copy',conflict:'number'}),request('remux.mkv',{container:'mkv',video:'copy',audio:'copy',conflict:'number'})],'gui','remux-batch');expect(duplicates[0].id).toBe(original.id);service=recovered;host=new McpHost(service)
-    const persisted=service.queue.jobs.map(job=>job.id===original.id?{...job,status:'running'}:job);await writeFile(join(service.dataPath,'jobs.json'),JSON.stringify(persisted));await service.shutdown();const restarted=new MediaService(service.dataPath,service.enginePath);await restarted.initialize();expect(restarted.queue.get(original.id).status).toBe('interrupted');await restarted.paths.grantFile(input);await restarted.paths.grantDirectory(output);service=restarted;host=new McpHost(service)
+    const persisted=service.queue.jobs.map(job=>job.id===original.id?{...job,status:'running'}:job);await service.shutdown();await new JobHistoryStore(service.dataPath).write(persisted as Job[]);const restarted=new MediaService(service.dataPath,service.enginePath);await restarted.initialize();expect(restarted.queue.get(original.id).status).toBe('interrupted');await restarted.paths.grantFile(input);await restarted.paths.grantDirectory(output);service=restarted;host=new McpHost(service)
   })
 })
 describe('MCP HTTP 实际客户端',()=>{

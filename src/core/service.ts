@@ -66,7 +66,7 @@ export class MediaService extends EventEmitter {
   }
   get settings(): Settings { return structuredClone(this.configuration.settings) }
   get engine(): Engine { if (!this.configuration.engine) throw new Error('未配置 FFmpeg，请前往设置选择或下载引擎'); return structuredClone(this.configuration.engine) }
-  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
+  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
   private roots(source: Source, output = false): string[] | undefined { return source === 'mcp' ? (output ? this.settings.mcp.outputRoots : this.settings.mcp.inputRoots) : undefined }
   private permission(source: Source, action: 'allowInspect' | 'allowSubmit' | 'allowCancel'): void { if (source === 'mcp' && (!this.settings.mcp.enabled || !this.settings.mcp[action])) throw new Error('此 MCP 操作未获授权，请检查设置') }
   async inspect(input: string, source: Source = 'gui') { this.permission(source,'allowInspect'); return inspectMedia(this.engine,await this.paths.input(input,this.roots(source))) }
@@ -116,6 +116,7 @@ export class MediaService extends EventEmitter {
     for (const job of this.queue.jobs) { try { jobs.push(await this.job(job.id,source)) } catch {} }
     return jobs
   }
+  async deleteJobRecords(ids:string[]):Promise<number>{return this.queue.deleteRecords(ids)}
   async cancel(id: string, source: Source = 'gui'): Promise<Job> { this.permission(source,'allowCancel'); await this.authorizedJob(id,source); return this.queue.cancel(id) }
   async pause(id:string,source:Source='gui'):Promise<Job>{this.permission(source,'allowCancel');await this.authorizedJob(id,source);return this.queue.pause(id)}
   async resume(id:string,source:Source='gui'):Promise<Job>{this.permission(source,'allowCancel');await this.authorizedJob(id,source);return this.queue.resume(id)}

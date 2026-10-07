@@ -47,10 +47,10 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
     const update=()=>{
       frame=0;const bounds=viewport.current?.getBoundingClientRect();if(!bounds)return
       const shown=active&&document.visibilityState==='visible'
-      // The exit dialog covers the whole player while it shuts down. Editing
-      // dialogs and ordinary popups keep the existing rectangular video clipping.
+      // Keep the full overlay bounds and corner radius: clipping them to the
+      // viewport first would move rounded corners when a popup crosses its edge.
       const exitOpen=!!document.querySelector('.exit-dialog')
-      const occlusions=Array.from(document.querySelectorAll('[role="dialog"],[role="listbox"],.toast,.player-loading,.operation-status')).slice(0,32).flatMap(element=>{const overlay=element.getBoundingClientRect(),left=Math.max(bounds.left,overlay.left),top=Math.max(bounds.top,overlay.top),right=Math.min(bounds.right,overlay.right),bottom=Math.min(bounds.bottom,overlay.bottom);return right>left&&bottom>top?[{x:left-bounds.x,y:top-bounds.y,width:right-left,height:bottom-top}]:[]})
+      const occlusions=Array.from(document.querySelectorAll('[role="dialog"],[role="listbox"],.toast,.player-loading,.operation-status')).slice(0,32).flatMap(element=>{const overlay=element.getBoundingClientRect(),style=getComputedStyle(element),radius=Math.min(...[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overlay.width/2,overlay.height/2);return overlay.right>bounds.left&&overlay.left<bounds.right&&overlay.bottom>bounds.top&&overlay.top<bounds.bottom?[{x:overlay.x-bounds.x,y:overlay.y-bounds.y,width:overlay.width,height:overlay.height,radius}]:[]})
       const rect={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,scale:window.devicePixelRatio,visible:shown&&hasVideo&&!exitOpen&&bounds.bottom>0&&bounds.top<window.innerHeight,active,occlusions}
       const key=JSON.stringify(rect);if(key===last)return;last=key
       void window.muxivra.playerRect(owner,rect).catch(error=>setError(error.message))

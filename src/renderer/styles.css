@@ -248,7 +248,7 @@ input[type="checkbox"] { accent-color:var(--accent); }
 .select-trigger>span:first-child { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .select-trigger>span:last-child { flex-shrink:0;color:var(--muted); }
 .select-trigger[data-state="open"] { border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 15%,transparent); }
-.select-menu { z-index:90;min-width:var(--radix-select-trigger-width);max-width:min(650px,95vw);max-height:min(420px,var(--radix-select-content-available-height));background:var(--surface);border:1px solid var(--border);border-radius:0;box-shadow:none;color:var(--text);font-size:15px;overflow:hidden; }
+.select-menu { z-index:90;min-width:var(--radix-select-trigger-width);max-width:min(650px,95vw);max-height:min(420px,var(--radix-select-content-available-height));background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:none;color:var(--text);font-size:15px;overflow:hidden; }
 .select-scroll-area { position:relative;display:flex;min-height:0; }
 .select-viewport { padding:5px;max-height:min(418px,calc(var(--radix-select-content-available-height) - 2px));overscroll-behavior:contain;scrollbar-width:none; }
 .select-viewport.has-scrollbar { padding-right:17px; }
@@ -382,3 +382,38 @@ input[type="checkbox"] { width:16px;height:16px;flex-shrink:0; }
 .exit-progress { margin-top:24px; }
 .exit-progress .activity-line { border-radius:2px;margin-top:12px; }
 @media(max-width:1100px) { .task-toolbar { grid-template-columns:1fr 1fr; }.hardware-summary-grid { grid-template-columns:1.2fr .6fr;gap:14px; }.hardware-summary-item:last-child { grid-column:span 2; }.hardware-summary-item:last-child>div { flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px 24px; }.hardware-summary-gpu { gap:8px; }.hardware-summary-footer { flex-wrap:wrap; }.hardware-facts { grid-template-columns:1fr 1fr; }.hardware-device-data { grid-template-columns:1fr 1fr; }.usage-sparkline { width:40px; }.usage-summary { gap:12px; }.usage-header { gap:12px; }.usage-detail-grid { grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px; }.usage-live { display:none; } }
+.select-trigger { border-radius:8px; }
+.select-option { border-radius:7px; }
+.job-selection { margin:0 4px 0 0; }
+.job .progress { margin-top:10px; }
+.job-timing { gap:10px 22px;padding:9px 12px;margin:10px 0 7px; }
+.job-codecs { color:var(--text); }
+.job-actions { margin-top:0;gap:3px; }
+.task-selection-toolbar { display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:14px 0; }
+.task-selection-toolbar label { display:flex;align-items:center;gap:7px;font-size:14px; }
+.task-selection-toolbar>.button:last-child { margin-left:auto; }
+.task-pagination { display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0;flex-wrap:wrap; }
+.task-pagination .input { width:65px;min-height:32px;padding:5px 8px; }
+.task-page-number { font-size:14px;white-space:nowrap; }
+.task-details-page { display:flex;flex-direction:column;gap:14px; }
+.task-details-heading { display:flex;align-items:flex-start;justify-content:space-between;gap:12px; }
+.task-details-heading h2 { margin:10px 0 4px;font-size:22px; }
+.task-detail-name { margin:0;color:var(--muted);overflow-wrap:anywhere;font-size:15px; }
+.task-record-grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 24px;margin:0; }
+.task-record-grid dt { color:var(--muted);font-size:14px;margin-bottom:6px; }
+.task-record-grid dd { margin:0;font-size:15px;overflow-wrap:anywhere; }
+.task-record-id { font-family:var(--font-mono,monospace);font-size:13px!important; }
+.task-file-record { display:flex;align-items:center;justify-content:space-between;gap:18px;padding:10px 0; }
+.task-file-record+div { border-top:1px solid var(--border); }
+.task-file-record>div { min-width:0; }
+.task-file-record p { margin:6px 0;overflow-wrap:anywhere; }
+.task-file-record .button { flex-shrink:0; }
+.task-engine-record { display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap; }
+.task-event-list { list-style:none;margin:0;padding:0; }
+.task-event-list li { display:grid;grid-template-columns:190px 1fr;gap:16px;border-bottom:1px solid var(--border);padding:10px 0;font-size:14px; }
+.task-event-list time { color:var(--muted); }
+.task-event-list li:last-child { border-bottom:0; }
+.task-log-toolbar { display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap; }
+.task-full-log { max-height:500px;color:var(--text);font-size:13px; }
+.task-log-pagination { display:flex;justify-content:flex-end;gap:8px; }
+@media(max-width:1100px) { .task-record-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.task-file-record { align-items:flex-start;flex-direction:column;gap:6px; }.job-actions { gap:1px; }.job-actions .button { padding-left:7px;padding-right:7px; } }

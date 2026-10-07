@@ -2,7 +2,7 @@
 
 ## 仓库与本地产物
 
-当前应用版本为 0.7.0。GitHub 仓库保存应用源码、锁文件、测试、构建脚本与许可证。安装包、构建缓存、测试产物和个人媒体不纳入 Git；打包后在本机 `release/` 中生成安装文件。
+当前应用版本为 0.8.0。GitHub 仓库保存应用源码、锁文件、测试、构建脚本与许可证。安装包、构建缓存、测试产物和个人媒体不纳入 Git；打包后在本机 `release/` 中生成安装文件。
 
 安装包目前未签名。实际验证范围与限制见 [验收记录](VERIFICATION.md)，构建方式见 [开发文档](DEVELOPMENT.md)。
 
@@ -17,8 +17,8 @@
 可用 PowerShell 检查交付文件的 SHA-256：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.7.0-win-x64-setup.exe
-Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.7.0-source.zip
+Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.8.0-win-x64-setup.exe
+Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.8.0-source.zip
 ```
 
 ## 应用与第三方许可

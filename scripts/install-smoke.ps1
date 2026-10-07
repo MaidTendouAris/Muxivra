@@ -1,4 +1,4 @@
-﻿param([string]$Installer = '')
+param([string]$Installer = '', [ValidateSet('desktop','player','parameters','ui','mcp-setup','tasks')][string[]]$Suites = @('desktop','player','parameters','ui','mcp-setup','tasks'))
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if (-not $Installer) {
@@ -31,21 +31,20 @@ try {
   $processingEngines = Get-ChildItem -LiteralPath $target -Recurse -File | Where-Object { $_.Name -in @('ffmpeg.exe','ffprobe.exe') }
   if ($processingEngines) { throw '安装包意外包含 FFmpeg/ffprobe 处理引擎' }
   $env:MUXIVRA_EXECUTABLE = $installedExecutable
-  & node (Join-Path $projectRoot 'scripts\desktop-smoke.mjs')
-  if ($LASTEXITCODE -ne 0) { throw '已安装应用桌面验证失败' }
-  Copy-Item -LiteralPath (Join-Path $projectRoot 'artifacts\qa\desktop-smoke.json') -Destination (Join-Path $projectRoot 'artifacts\qa\installed-smoke.json')
-  & node (Join-Path $projectRoot 'scripts\player-smoke.mjs')
-  if ($LASTEXITCODE -ne 0) { throw '已安装应用 mpv 播放器验证失败' }
-  Copy-Item -LiteralPath (Join-Path $projectRoot 'artifacts\qa\player-smoke.json') -Destination (Join-Path $projectRoot 'artifacts\qa\installed-player-smoke.json')
-  & node (Join-Path $projectRoot 'scripts\parameters-smoke.mjs')
-  if ($LASTEXITCODE -ne 0) { throw '已安装应用参数与预设验证失败' }
-  Copy-Item -LiteralPath (Join-Path $projectRoot 'artifacts\qa\parameters-smoke.json') -Destination (Join-Path $projectRoot 'artifacts\qa\installed-parameters-smoke.json')
-  & node (Join-Path $projectRoot 'scripts\ui-smoke.mjs')
-  if ($LASTEXITCODE -ne 0) { throw '已安装应用界面与退出流程验证失败' }
-  Copy-Item -LiteralPath (Join-Path $projectRoot 'artifacts\qa\ui-smoke.json') -Destination (Join-Path $projectRoot 'artifacts\qa\installed-ui-smoke.json')
-  node scripts/mcp-setup-smoke.mjs
-  if ($LASTEXITCODE -ne 0) { throw '已安装应用 MCP 接入与内置指南验证失败' }
-  Copy-Item -LiteralPath (Join-Path $projectRoot 'artifacts\qa\mcp-setup-smoke.json') -Destination (Join-Path $projectRoot 'artifacts\qa\installed-mcp-setup-smoke.json')
+  $checks = @(
+    @{ Name='desktop'; Script='desktop-smoke'; Report='installed-smoke'; Description='桌面' },
+    @{ Name='player'; Script='player-smoke'; Report='installed-player-smoke'; Description='mpv 播放器' },
+    @{ Name='parameters'; Script='parameters-smoke'; Report='installed-parameters-smoke'; Description='参数与预设' },
+    @{ Name='ui'; Script='ui-smoke'; Report='installed-ui-smoke'; Description='界面与退出流程' },
+    @{ Name='mcp-setup'; Script='mcp-setup-smoke'; Report='installed-mcp-setup-smoke'; Description='MCP 接入与内置指南' },
+    @{ Name='tasks'; Script='task-history-smoke'; Report='installed-task-history-smoke'; Description='任务历史、分页与删除' }
+  )
+  foreach ($check in $checks) {
+    if ($check.Name -notin $Suites) { continue }
+    & node (Join-Path $projectRoot "scripts\$($check.Script).mjs")
+    if ($LASTEXITCODE -ne 0) { throw "已安装应用 $($check.Description) 验证失败" }
+    Copy-Item -LiteralPath (Join-Path $projectRoot "artifacts\qa\$($check.Script).json") -Destination (Join-Path $projectRoot "artifacts\qa\$($check.Report).json")
+  }
 } finally {
   $env:MUXIVRA_EXECUTABLE = $previousExecutable
   $uninstaller = Join-Path $target 'Uninstall Muxivra.exe'

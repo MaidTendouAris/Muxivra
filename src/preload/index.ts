@@ -10,6 +10,7 @@ const api: MuxivraApi = {
   inspect: path => invoke('inspect',path), plan: request => invoke('plan',request), planBatch: requests => invoke('planBatch',requests), submit: (requests,key) => invoke('submit',requests,key),
   cancel: id => invoke('cancel',id), retry: id => invoke('retry',id), detectEngine: () => invoke('detectEngine'), useEngine: path => invoke('useEngine',path), downloadEngine: () => invoke('downloadEngine'),
   pause:id=>invoke('pause',id),resume:id=>invoke('resume',id),moveJob:(id,direction)=>invoke('moveJob',id,direction),refreshHardware:()=>invoke('refreshHardware'),systemUsage:()=>invoke('systemUsage'),
+  jobDetails:id=>invoke('jobDetails',id),deleteJobRecords:ids=>invoke('deleteJobRecords',ids),readLogPage:(id,offset)=>invoke('readLogPage',id,offset),
   saveSettings: settings => invoke('saveSettings',settings), savePreset: preset => invoke('savePreset',preset), deletePreset: id => invoke('deletePreset',id),
   importPresets:()=>invoke('importPresets'),exportPresets:ids=>invoke('exportPresets',ids),componentCapabilities:(kind,name)=>invoke('componentCapabilities',kind,name),
   readSubtitles: path => invoke('readSubtitles',path), saveSession: document => invoke('saveSession',document), getSession: () => invoke('getSession'), exportSubtitles: document => invoke('exportSubtitles',document),

@@ -21,6 +21,7 @@ const errors=[]
 try {
   const page=await desktop.firstWindow();page.on('pageerror',error=>errors.push(error.message))
   await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(true);w.show();w.focus()});await page.bringToFront()
   await desktop.evaluate(({dialog},values)=>{
     dialog.showOpenDialog=async(_parent,options)=>({canceled:false,filePaths:options.title==='载入音轨'?[values.audio]:options.title==='载入字幕'?[values.srt]:[values.video]})
     dialog.showSaveDialog=async()=>({canceled:false,filePath:values.shot})
@@ -32,6 +33,9 @@ try {
   await wait(s=>s.ready&&!s.loading&&s.durationMs>7000&&s.videoWidth===480)
   assert.equal((await state()).volume,50)
   const volume=page.getByLabel('音量',{exact:true});assert.ok((await volume.boundingBox()).width>=175)
+  // mpv can take native keyboard focus while its first frame is loading. A
+  // real pointer click establishes the same focus a user gives this control.
+  await volume.click();await wait(s=>s.volume===50)
   await volume.press('ArrowRight');await wait(s=>s.volume===55);await volume.press('ArrowLeft');await wait(s=>s.volume===50)
   await volume.dispatchEvent('pointerdown');for(const value of ['44','65','84'])await volume.fill(value)
   const stale={...(await state()),volume:10};await desktop.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].webContents.send('muxivra:player-state',value),stale);await page.waitForTimeout(100);assert.equal(await volume.inputValue(),'84')
@@ -62,6 +66,8 @@ try {
     const ring=[]
     for(let y=box.top+5;y<box.bottom-5;y+=9)for(const x of [box.left-1,box.right])if(x>origin.x+1&&x<origin.x+nativeRect.right-1&&y>origin.y+1&&y<origin.y+nativeRect.bottom-1)ring.push({x,y})
     for(let x=box.left+5;x<box.right-5;x+=9)for(const y of [box.top-1,box.bottom])if(x>origin.x+1&&x<origin.x+nativeRect.right-1&&y>origin.y+1&&y<origin.y+nativeRect.bottom-1)ring.push({x,y})
+    // Rounded popup corners are transparent and must retain the video beneath.
+    for(const x of [box.left+1,box.right-2])for(const y of [box.top+1,box.bottom-2])if(x>origin.x+1&&x<origin.x+nativeRect.right-1&&y>origin.y+1&&y<origin.y+nativeRect.bottom-1)ring.push({x,y})
     assert.ok(ring.length>10,'Speed menu must overlap native video')
     for(const theme of ['dark','light']) {
       await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.waitForTimeout(150)
