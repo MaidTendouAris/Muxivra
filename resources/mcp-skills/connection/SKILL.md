@@ -10,7 +10,7 @@ description: 连接本机 Muxivra Streamable HTTP MCP、配置凭据并验证工
 ## 连接与验证
 
 1. 使用提示词中的实际 URL，协议为 Streamable HTTP。每个请求包含 `Authorization: Bearer <凭据>`。凭据可存入用户环境变量 `MUXIVRA_MCP_TOKEN`，不写入项目、提交记录或报告。
-2. Codex 的用户配置采用 `[mcp_servers.muxivra]`、`url` 和 `bearer_token_env_var = "MUXIVRA_MCP_TOKEN"`。已有其他配置须保留。可先检查本机 `codex mcp add --help`，再使用 `codex mcp add muxivra --url <URL> --bearer-token-env-var MUXIVRA_MCP_TOKEN`；更新已有条目时保留其无关设置。
+2. 根据当前平台的 MCP 配置或本机执行能力选择连接方式，使用相同的 URL、传输和认证头。保留客户端其他连接配置；本服务器不要求采用某一种客户端的配置格式。
 3. 当前进程不会因修改用户环境变量而自动继承新值。为当前操作进程设置环境变量，并在客户端要求时重新加载 MCP 或由用户重启客户端。配置写入成功不等于连接成功。
 4. 使用现有 MCP 客户端完成 initialize、通知 initialized、tools/list。无需 OAuth 登录；本服务采用用户设置的静态 Bearer 凭据。
 5. 调用 `list_skills`、`read_skill({"id":"workflow"})`。查询权限允许时读取 `get_system_hardware` 和 `list_presets`。以真实响应报告应用版本、工具及指南，不提交媒体任务作为连接测试。
@@ -31,4 +31,4 @@ Muxivra 必须运行；关闭主窗口后托盘中的服务继续，退出应用
 
 401 表示凭据不匹配，403 表示 Host/Origin 或本机访问限制，406 通常是缺少正确 Accept。其他排错见 `read_skill({"id":"troubleshooting"})`。
 
-Codex 配置依据：OpenAI 官方 https://learn.chatgpt.com/docs/extend/mcp 与 https://learn.chatgpt.com/docs/developer-commands，核对日期 2026-10-06；后续以本机客户端实际能力为准。
+initialize 的 instructions 提供当前授权输入/输出目录、权限和硬件快照。安装目录下的 outputs 默认已提供；输入目录需用户在设置中手动添加。后续按 workflow 和 goals 处理需求，不能自行扩大输入授权。

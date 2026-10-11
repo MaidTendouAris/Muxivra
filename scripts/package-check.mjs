@@ -15,7 +15,7 @@ await access(join(resources,'mpv-input.conf'));await access(join(resources,'mpv/
 assert.ok(extractFile(asar,'LICENSE').length>10000);assert.match(extractFile(asar,'THIRD-PARTY-NOTICES.txt').toString(),/Bundled mpv playback runtime/)
 const native=files.filter(path=>/koffi.*\.node$/i.test(path));assert.ok(native.length>0)
 assert.ok(extractFile(asar,join('out','main','hardware-worker.js')).length>100)
-const guides=['connection','workflow','audio','video','parameters','troubleshooting']
+const guides=['connection','workflow','goals','audio','video','parameters','troubleshooting']
 for(const id of guides)assert.match(extractFile(asar,join('resources','mcp-skills',id,'SKILL.md')).toString(),/^---\r?\nname: muxivra-/)
 const metadata=JSON.parse(extractFile(asar,'package.json').toString());assert.equal(metadata.version,JSON.parse(await readFile('package.json','utf8')).version)
 const report={version:metadata.version,asarEntries:entries.length,bundledProcessingEngines:engines,license:true,thirdPartyNotices:true,chromiumPlaybackLibrary:true,mediaPlayback:'mpv',mpvVersion:manifest.version,mpvSha256:manifest.executableSha256,mpvInput:true,nativeModule:true,mcpSkills:guides}

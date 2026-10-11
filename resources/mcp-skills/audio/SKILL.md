@@ -5,6 +5,8 @@ description: AAC M4A、MP3、FLAC 音频转码，采样率、声道和音频滤�
 
 # 音频转码
 
+“快一点”“音质好”“文件小”等要求先阅读 goals。GPU 视频编码器不适用于 AAC/MP3 音频；音频品质使用 audioBitrate 或编码器专用音频选项，不能通过修改视频 quality / speed 来提高音质。有损源再次转码不会恢复已经丢失的细节。
+
 先 inspect_media 并复制 list_presets 返回的音频预设。AAC M4A 的内置预设 ID 为 aac：M4A 容器、AAC 编码、目标 192 kbps、关闭视频。MP3 使用 mp3 预设，FLAC 使用 flac 预设。
 
 ## AAC M4A 请求示例

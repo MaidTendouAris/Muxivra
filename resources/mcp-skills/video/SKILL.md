@@ -9,6 +9,8 @@ inspect_media 确认视频轨道、音轨、字幕和时长。list_presets 返�
 
 ## 编码选择
 
+速度、画质、压缩率、兼容性或目标体积要求先阅读 goals，按目标选型，不直接将用户的模糊词语换成一个固定质量值。速度优先考虑当前可用硬件编码；压缩率优先考虑兼容的 H.265/AV1。
+
 - libx264、libx265 是软件编码；质量与速度根据用户目标选择。H.264/H.265 的质量值范围为 0–51。
 - h264_nvenc、hevc_nvenc 等硬件编码器必须存在于当前引擎，并依赖设备和驱动。读取到 NVIDIA 型号或 FFmpeg 编码器列表不能代替实际试编码。硬件信息 missing/error 或 accelerationValidation = not-tested 时，如实保留状态。
 - maxHeight 不放大原始视频。精确宽高使用 advanced.width/height；不要同时设置 maxHeight。源帧率默认保留，设置 advanced.frameRate 需有效数字或分数。

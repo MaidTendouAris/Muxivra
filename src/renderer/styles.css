@@ -9,6 +9,20 @@ button,input,select,textarea { font:inherit; }
 button { cursor:pointer; }
 button:disabled { cursor:not-allowed;opacity:.45; }
 :focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+:root,[data-theme="dark"] { --unsaved:#f1c16c;--unsaved-bg:#332919; }
+[data-theme="light"] { --unsaved:#8b580c;--unsaved-bg:#fff3d9; }
+.settings-form { margin:0;padding:0;border:0;min-width:0; }
+.setting-marker { color:var(--unsaved);font-size:12px;font-weight:500;margin-left:9px;white-space:nowrap; }
+.field.setting-changed>span,.switch-label.setting-changed,.permission-list .setting-changed { color:var(--unsaved); }
+.field.setting-changed .input { border-color:var(--unsaved);background:var(--unsaved-bg); }
+.switch-label.setting-changed,.permission-list .setting-changed { background:var(--unsaved-bg);border-radius:6px;box-shadow:0 0 0 5px var(--unsaved-bg); }
+.root-section.setting-changed { border-color:var(--unsaved);background:color-mix(in srgb,var(--unsaved-bg) 60%,var(--surface)); }
+.root-section.setting-changed>.card-heading>span,.mcp-manual.setting-changed>summary { color:var(--unsaved); }
+.settings-save.settings-dirty { border-color:var(--unsaved); }
+.settings-save.settings-dirty>.hint { color:var(--unsaved); }
+.settings-leave-dialog { max-width:530px; }
+.settings-leave-dialog>p { color:var(--muted);margin:18px 0 26px; }
+.settings-leave-actions { display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap; }
 ::selection { background:var(--accent);color:var(--accent-text); }
 h1,h2,h3,p { margin:0; }
 h1 { font-size:22px;font-weight:600; }

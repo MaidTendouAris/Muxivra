@@ -56,7 +56,7 @@ export interface Settings { theme: 'dark' | 'light' | 'system'; concurrency: num
 export interface DownloadState { state: 'idle' | 'downloading' | 'verifying' | 'extracting' | 'completed' | 'failed'; percent: number; message: string }
 export interface Snapshot {
   engine?: Engine; engines: Engine[]; jobs: Job[]; presets: Preset[]; settings: Settings; download: DownloadState
-  mcp: { running: boolean; url?: string; error?: string }; notice?: string; dataPath: string; enginePath: string; defaultOutputPath?: string
+  mcp: { running: boolean; url?: string; error?: string }; notice?: string; dataPath: string; enginePath: string; defaultOutputPath?: string; defaultMcpOutputPath?: string
   hardware: import('./hardware').HardwareInfo; hardwareRefreshing: boolean
 }
 export interface ExitPrompt {

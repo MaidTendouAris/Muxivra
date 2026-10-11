@@ -1,6 +1,6 @@
 {
   "name": "muxivra",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "本地媒体处理、批量转码与字幕工作台",
   "main": "out/main/index.js",
   "author": "Muxivra contributors",

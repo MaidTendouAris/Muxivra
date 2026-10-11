@@ -60,9 +60,28 @@ try {
   assert.ok(await page.locator('.hardware-summary-item').evaluateAll(items=>items.every(e=>getComputedStyle(e).borderTopStyle==='solid'&&parseFloat(getComputedStyle(e).borderTopWidth)>=.5)))
   await shot('settings-dark')
   await delay('saveSettings',800)
+  const navTasks=()=>page.locator('.navigation').getByRole('button',{name:/^任务/}).click()
+  const navSettings=()=>page.locator('.navigation').getByRole('button',{name:'设置',exact:true}).click()
+  const concurrency=()=>page.getByRole('combobox',{name:'并发任务数',exact:true})
+  const chooseConcurrency=async value=>{await concurrency().click();await page.getByRole('option',{name:String(value),exact:true}).click()}
+  const leave=page.getByRole('dialog',{name:'应用设置更改？',exact:true})
+  await chooseConcurrency(2)
+  assert.equal(await concurrency().evaluate(e=>e.closest('.field').dataset.changed),'true')
+  const colors=await concurrency().evaluate(e=>({changed:getComputedStyle(e).borderColor,normal:getComputedStyle(document.querySelector('.field:not(.setting-changed) .input')).borderColor}));assert.notEqual(colors.changed,colors.normal)
+  await navTasks();await leave.waitFor();await leave.getByRole('button',{name:'继续编辑',exact:true}).click();assert.equal(await concurrency().innerText(),'2')
+  await page.getByRole('button',{name:'查看详细信息',exact:true}).click();await page.getByRole('button',{name:'返回设置',exact:true}).click();assert.equal(await concurrency().innerText(),'2')
+  await shot('settings-unsaved-dark')
+  await navTasks();await leave.getByRole('button',{name:'放弃更改',exact:true}).click();await navSettings();assert.equal(await concurrency().innerText(),'1');assert.equal(await page.locator('.settings-form .setting-changed').count(),0)
+  await chooseConcurrency(2);await navTasks();await leave.getByRole('button',{name:'应用并离开',exact:true}).click()
+  await leave.getByRole('button',{name:'正在应用…',exact:true}).waitFor();assert.equal(await leave.getByRole('button',{name:'关闭',exact:true}).isDisabled(),true)
+  await page.keyboard.press('Escape');assert.equal(await leave.isVisible(),true)
+  await leave.waitFor({state:'hidden'});assert.equal((await page.evaluate(()=>window.muxivra.snapshot())).settings.concurrency,2)
+  await navSettings();assert.equal(await concurrency().innerText(),'2');assert.equal(await page.locator('.settings-form .setting-changed').count(),0)
+  await chooseConcurrency(1)
   await page.getByRole('combobox',{name:'界面主题',exact:true}).click();await page.getByRole('option',{name:'浅色',exact:true}).click();await page.getByRole('button',{name:'保存设置',exact:true}).click()
   assert.equal(await page.getByRole('button',{name:'保存设置',exact:true}).getAttribute('aria-busy'),'true')
   await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');await shot('settings-light')
+  await chooseConcurrency(2);await shot('settings-unsaved-light');await chooseConcurrency(1)
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1040,height:720}));await shot('settings-minimum')
   assert.ok((await page.locator('.hardware-summary').boundingBox()).height<300)
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
@@ -94,7 +113,7 @@ try {
   await exited;closed=true
   const historyRoot=join(root,'profile','job-history'),historyIndex=JSON.parse(await readFile(join(historyRoot,'index.json'),'utf8'));const persisted=(await Promise.all(historyIndex.pages.map(async name=>JSON.parse(await readFile(join(historyRoot,name),'utf8')).jobs))).flat();assert.equal(persisted.find(j=>j.id===jobs[2].id).status,'paused')
   assert.deepEqual(errors,[])
-  const report={appVersion:version,executable:process.env.MUXIVRA_EXECUTABLE||'development',dropdownWheelAndThumbDrag:true,dropdownKeyboard:true,noScrollArrows:true,ordinaryTextNotSelectable:true,inputsEditable:true,nestedHardwareAndTaskCards:true,delayedImportSaveCancelFeedback:true,cancelWaitsForFinalStatus:true,trayCustomExit:true,exitCancelAndEscape:true,exitClosingFeedbackAndLock:true,noNativeExitDialog:true,themes:['dark','light'],minimumWindow:[1040,720],errors}
+  const report={appVersion:version,executable:process.env.MUXIVRA_EXECUTABLE||'development',unsavedSettingsColor:true,leaveApplyDiscardStay:true,saveWhileLeavingFeedbackAndLock:true,hardwareDetailsPreserveDraft:true,dropdownWheelAndThumbDrag:true,dropdownKeyboard:true,noScrollArrows:true,ordinaryTextNotSelectable:true,inputsEditable:true,nestedHardwareAndTaskCards:true,delayedImportSaveCancelFeedback:true,cancelWaitsForFinalStatus:true,trayCustomExit:true,exitCancelAndEscape:true,exitClosingFeedbackAndLock:true,noNativeExitDialog:true,themes:['dark','light'],minimumWindow:[1040,720],errors}
   await writeFile('artifacts/qa/ui-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2))
 } finally {
   if(!closed)await desktop.close();const rel=relative(resolve('.test-data'),root);if(rel&&!rel.startsWith(`..${sep}`)&&!isAbsolute(rel))await rm(root,{recursive:true,force:true})

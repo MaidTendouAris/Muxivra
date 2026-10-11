@@ -7,35 +7,37 @@ import type { McpSettings } from '../../src/shared/types'
 const settings:McpSettings={enabled:true,port:19481,token:'a'.repeat(64),inputRoots:['D:\\音乐'],outputRoots:['D:\\Outputs'],allowInspect:true,allowSubmit:false,allowCancel:false}
 const info={version:'test-version',running:true,executablePath:"D:\\Program's Files\\Muxivra.exe",skills:skillCatalog()}
 describe('可复制的 MCP 连接提示词',()=>{
-  it('完整内容带实际保存值、凭据、目录、权限、启动路径及当前会话连接步骤',()=>{
+  it('包含实际连接信息、认证、授权边界和服务器响应说明，且不绑定客户端',()=>{
     const text=buildMcpConnectionPrompt(settings,info)
     expect(text).toContain('http://127.0.0.1:19481/mcp')
     expect(text).toContain(settings.token)
     expect(text).toContain(JSON.stringify(settings.inputRoots[0]))
     expect(text).toContain('提交任务：未授权')
-    expect(text).toContain("'D:\\Program''s Files\\Muxivra.exe'")
-    expect(text).toContain('protocolVersion')
+    expect(text).toContain(JSON.stringify(info.executablePath))
+    expect(text).toContain(`Authorization: Bearer ${settings.token}`)
     expect(text).toContain('notifications/initialized')
-    expect(text).toContain('不授权转码或取消现有媒体任务')
-    expect(text).toContain('不保存凭据')
+    expect(text).toContain('等待我的处理需求')
+    expect(text).toContain('isError')
+    expect(text).toContain('goals')
+    for(const clientSpecific of ['Codex','config.toml','mcp_servers','SetEnvironmentVariable','Start-Process'])expect(text).not.toContain(clientSpecific)
   })
-  it('预览所有位置隐藏凭据，包括环境变量命令',()=>{
+  it('预览所有位置隐藏凭据',()=>{
     const text=buildMcpConnectionPrompt(settings,info,true)
     expect(text).not.toContain(settings.token)
     expect(text).toContain('[复制时包含实际凭据]')
-    expect(text).toContain('bearer_token_env_var = "MUXIVRA_MCP_TOKEN"')
+    expect(text).toContain('MUXIVRA_MCP_TOKEN')
   })
   it('未授权目录、未运行和开发构建如实展示，避免生成无效的 Electron 启动命令',()=>{
     const text=buildMcpConnectionPrompt({...settings,inputRoots:[],outputRoots:[],allowInspect:false},{...info,executablePath:undefined,running:false})
     expect(text).toContain('查询与读取指南：未授权')
     expect(text).toContain('尚未运行')
-    expect(text).toContain('这是开发构建')
+    expect(text).toContain('开发构建')
     expect(text).not.toContain('Start-Process')
   })
 })
 describe('内置指南与真实结构化参数',()=>{
   it('固定目录拒绝任意文件路径，参数参考跟随共享定义',()=>{
-    expect(skillCatalog().map(s=>s.id)).toEqual(['connection','workflow','audio','video','parameters','troubleshooting'])
+    expect(skillCatalog().map(s=>s.id)).toEqual(['connection','workflow','goals','audio','video','parameters','troubleshooting'])
     expect(()=>readSkill('../../config.json')).toThrow('未知指南')
     const reference=readSkill('parameters').parameterReference!
     expect(reference).toEqual(parameterReference())

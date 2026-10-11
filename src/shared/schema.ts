@@ -34,7 +34,7 @@ export const presetFileSchema = z.object({format:z.literal('muxivra-presets'),ve
 export const settingsSchema = z.object({
   theme: z.enum(['dark','light','system']), concurrency: z.number().int().min(1).max(4),
   mcp: z.object({ enabled: z.boolean(), port: z.number().int().min(1024).max(65535), token: z.string().regex(/^[a-f0-9]{64}$/),
-    inputRoots: z.array(pathSchema).max(32), outputRoots: z.array(pathSchema).max(32),
+    inputRoots: z.array(pathSchema).max(32), outputRoots: z.array(pathSchema).max(33),
     allowInspect: z.boolean(), allowSubmit: z.boolean(), allowCancel: z.boolean()
   }).strict()
 }).strict()

@@ -19,7 +19,7 @@ import { builtInPresets } from './presets'
 import { parseSrt, serializeSrt } from './subtitles/srt'
 import { makeWaveform } from './media/waveform'
 
-interface Configuration { settings: Settings; engine?: Engine; engines: Engine[]; presets: Preset[] }
+interface Configuration { settings: Settings; engine?: Engine; engines: Engine[]; presets: Preset[]; defaultOutputRoot?:string }
 export class MediaService extends EventEmitter {
   readonly paths = new PathPolicy()
   readonly queue: JobQueue
@@ -35,6 +35,7 @@ export class MediaService extends EventEmitter {
   private background = new AbortController()
   private backgroundTasks = new Set<Promise<unknown>>()
   private notice?: string
+  private defaultMcpOutputRoot?: string
   mcpState: Snapshot['mcp'] = { running: false }
   beforeSaveSettings?: (settings: Settings) => Promise<void>
   constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string) {
@@ -48,25 +49,42 @@ export class MediaService extends EventEmitter {
     this.configuration = await this.configStore.read(defaults)
     settingsSchema.parse(this.configuration.settings)
     this.configuration.presets.forEach(preset => presetSchema.parse(preset))
+    // Replace the app-managed output grant if an installation is relocated;
+    // manually configured output grants remain intact.
+    const previousDefault=this.configuration.defaultOutputRoot
+    if(previousDefault)this.configuration.settings.mcp.outputRoots=this.configuration.settings.mcp.outputRoots.filter(root=>localPath(root).toLowerCase()!==localPath(previousDefault).toLowerCase())
+    this.configuration.defaultOutputRoot=undefined
     try {
       const engine = this.configuration.engine ? await verifyEngine(this.configuration.engine.ffmpegPath,this.configuration.engine.source) : await detectEngine()
       this.configuration.engine = engine
       const managed = await managedEngines(this.enginePath)
       this.configuration.engines = [...new Map([...this.configuration.engines,...managed,...(engine ? [engine] : [])].map(e => [e.id,e])).values()]
     } catch (e) { this.configuration.engine = undefined; this.notice = `引擎不可用：${(e as Error).message}` }
+    if(this.defaultOutputPath) {
+      try {
+        await mkdir(this.defaultOutputPath,{recursive:true});await access(this.defaultOutputPath,constants.W_OK)
+        const root=await realpath(this.defaultOutputPath)
+        await this.paths.grantDirectory(root)
+        this.defaultMcpOutputRoot=root
+        this.configuration.defaultOutputRoot=root
+        this.configuration.settings.mcp.outputRoots=this.outputRoots(this.configuration.settings.mcp.outputRoots)
+      }
+      catch(error) { this.notice = `默认输出目录不可写：${this.defaultOutputPath}。请选择其他输出目录。${(error as Error).message}` }
+    }
     await this.configStore.write(this.configuration)
     await this.queue.initialize()
     await this.hardware.initialize()
     this.queue.concurrency = this.configuration.settings.concurrency
-    if(this.defaultOutputPath) {
-      try { await mkdir(this.defaultOutputPath,{recursive:true});await access(this.defaultOutputPath,constants.W_OK);await this.paths.grantDirectory(this.defaultOutputPath) }
-      catch(error) { this.notice = `默认输出目录不可写：${this.defaultOutputPath}。请选择其他输出目录。${(error as Error).message}` }
-    }
     this.queue.start()
+  }
+  private outputRoots(roots:string[]):string[] {
+    const values=this.defaultMcpOutputRoot?[this.defaultMcpOutputRoot,...roots]:roots
+    const seen=new Set<string>()
+    return values.filter(root=>{const key=localPath(root).toLowerCase();if(seen.has(key))return false;seen.add(key);return true})
   }
   get settings(): Settings { return structuredClone(this.configuration.settings) }
   get engine(): Engine { if (!this.configuration.engine) throw new Error('未配置 FFmpeg，请前往设置选择或下载引擎'); return structuredClone(this.configuration.engine) }
-  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
+  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
   private roots(source: Source, output = false): string[] | undefined { return source === 'mcp' ? (output ? this.settings.mcp.outputRoots : this.settings.mcp.inputRoots) : undefined }
   private permission(source: Source, action: 'allowInspect' | 'allowSubmit' | 'allowCancel'): void { if (source === 'mcp' && (!this.settings.mcp.enabled || !this.settings.mcp[action])) throw new Error('此 MCP 操作未获授权，请检查设置') }
   async inspect(input: string, source: Source = 'gui') { this.permission(source,'allowInspect'); return inspectMedia(this.engine,await this.paths.input(input,this.roots(source))) }
@@ -147,8 +165,11 @@ export class MediaService extends EventEmitter {
   async saveSettings(settings: Settings): Promise<Snapshot> {
     return this.exclusiveConfig(async () => {
       const parsed = settingsSchema.parse(settings)
+      parsed.mcp.outputRoots=this.outputRoots(parsed.mcp.outputRoots)
+      if(parsed.mcp.outputRoots.length>(this.defaultMcpOutputRoot?33:32))throw new Error('最多添加 32 个输出目录，另含可用的默认 outputs 目录')
       for (const root of [...parsed.mcp.inputRoots,...parsed.mcp.outputRoots]) if (!(await stat(await realpath(localPath(root)))).isDirectory()) throw new Error('MCP 授权路径必须是现有目录')
-      if (parsed.mcp.enabled && (!parsed.mcp.inputRoots.length || !parsed.mcp.outputRoots.length)) throw new Error('开启 MCP 前请选择媒体与输出目录')
+      if (parsed.mcp.enabled && !parsed.mcp.inputRoots.length) throw new Error('开启 MCP 前请手动添加媒体目录')
+      if (parsed.mcp.enabled && !parsed.mcp.outputRoots.length) throw new Error('默认 outputs 不可用，请添加可用的输出目录')
       const next = { ...this.configuration, settings: parsed }
       try { await this.beforeSaveSettings?.(parsed); await this.configStore.write(next) }
       catch (error) {

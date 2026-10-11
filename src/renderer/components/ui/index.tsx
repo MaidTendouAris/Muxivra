@@ -4,9 +4,9 @@ import * as SelectPrimitive from '@radix-ui/react-select'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { Button } from './button'
 export { Button }
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
+export function Field({ label, children, hint, changed=false }: { label: string; children: ReactNode; hint?: string; changed?:boolean }) {
   const control = isValidElement(children) && [Input,Select,'input','select','textarea'].includes(children.type as typeof Input) ? cloneElement(children as ReactElement<{ 'aria-label'?: string }>,{ 'aria-label': (children.props as { 'aria-label'?: string })['aria-label'] ?? label }) : children
-  return <label className="field"><span>{label}</span>{control}{hint && <small>{hint}</small>}</label>
+  return <label className={`field ${changed?'setting-changed':''}`} data-changed={changed||undefined}><span>{label}{changed&&<small className="setting-marker">未保存</small>}</span>{control}{hint && <small>{hint}</small>}</label>
 }
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={`input ${props.className ?? ''}`} /> }
 export function Select({children,value,defaultValue,onChange,disabled,className,notifyOnReselect=false,...props}:SelectHTMLAttributes<HTMLSelectElement>&{notifyOnReselect?:boolean}) {

@@ -11,9 +11,11 @@
 
 ## AI 接入与指南
 
-连接提示词由 shared/mcp-connection.ts 根据实际设置和应用路径生成。主进程仅在 MCP 已运行时复制包含凭据的完整内容；设置页先保存用户草稿，成功后复制。预览隐藏凭据，复制失败不会覆盖剪贴板。提示词包含本机启动、用户与当前进程环境变量、Codex 用户配置、HTTP JSON-RPC 验证和指南入口；不直接修改其他客户端的配置。
+连接提示词由 shared/mcp-connection.ts 根据实际设置和应用路径生成。主进程仅在 MCP 已运行时复制包含凭据的完整内容；设置页先保存草稿，成功后复制。预览隐藏凭据，复制失败不覆盖剪贴板。内容仅含通用连接信息及响应说明，由 AI 按平台决定接入方式。initialize instructions 提供当前输入/输出目录、默认输出路径、权限及允许查询时的硬件快照。
 
-resources/mcp-skills 中的 6 份 Markdown 通过构建静态导入嵌入主进程，安装包也保留原始文档。list_skills/read_skill、skills 资源与 muxivra_workflow prompt 遵守分析查询权限；不能接受文件路径或读取用户任意 Markdown。参数资源来自共享定义，get_component_capabilities 读取本机引擎帮助并使用已有缓存。指南与应用版本同步，initialize instructions 指向工作流程指南。
+resources/mcp-skills 中的 7 份 Markdown 静态嵌入主进程，安装包保留原文。新增 goals 将模糊需求转成编码选型、质量/速度/体积取舍与验证流程。list_skills/read_skill、skills 资源与 muxivra_workflow prompt 遵守查询权限。参数资源来自共享定义，get_component_capabilities 读取本机引擎帮助并缓存。指南与应用版本同步。
+
+MediaService 初始化时创建并检查安装目录 outputs，成功后作为默认 MCP 输出范围持久化；保存设置时保留该默认目录并去重。不可写时提示并允许手动选其他输出。输入不自动授权，所有请求仍经独立输入/输出真实路径检查。Settings 草稿由 App 持有，按字段标色；所有页面导航统一检查草稿，应用成功后跳转，失败不丢失草稿；子页切换保留草稿。
 
 第一版核心由主进程管理，其 I/O、子进程和队列均为异步；FFmpeg 执行媒体计算。未引入 utilityProcess，模块边界已为后续独立承载保留。
 

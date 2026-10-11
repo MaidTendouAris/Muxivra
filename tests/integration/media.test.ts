@@ -34,18 +34,39 @@ beforeAll(async()=>{
 })
 afterAll(async()=>{for(const client of clients)await client.close().catch(()=>{});await host?.stop();await service?.shutdown();if(root&&isWithin(resolve('.test-data'),root))await rm(root,{recursive:true,force:true})})
 describe('真实 FFmpeg 与共享队列',()=>{
-  it('自动创建默认输出目录并授权 GUI，MCP 仍需配置输出目录',async()=>{
+  it('自动创建并提供 MCP 默认 outputs，输入仍需手动授权且其他输出不自动开放',async()=>{
     const directory=join(root,'temp-install','outputs'),local=new MediaService(join(root,'default-output-profile'),join(root,'default-output-engines'),directory)
     try {
       await local.initialize();await local.paths.grantFile(input)
       expect(local.snapshot().defaultOutputPath).toBe(directory)
       expect(await readdir(directory)).toEqual([])
+      expect(local.settings.mcp.inputRoots).toEqual([])
+      expect(local.settings.mcp.outputRoots).toEqual([directory])
+      await expect(local.saveSettings({...local.settings,mcp:{...local.settings.mcp,enabled:true}})).rejects.toThrow('手动添加媒体目录')
       const request={inputPath:input,outputPath:join(directory,'default-output.mp4'),options:defaultOptions}
       expect((await local.plan(request)).outputPath).toBe(request.outputPath)
       await local.paths.grantDirectory(root);await local.paths.grantDirectory(output)
-      await local.saveSettings({...local.settings,mcp:{...local.settings.mcp,enabled:true,inputRoots:[root],outputRoots:[output]}})
-      await expect(local.plan(request,'mcp')).rejects.toThrow('输出路径未获授权')
+      await local.saveSettings({...local.settings,mcp:{...local.settings.mcp,enabled:true,inputRoots:[root],outputRoots:[]}})
+      expect(local.settings.mcp.outputRoots).toEqual([directory])
+      expect((await local.plan(request,'mcp')).outputPath).toBe(request.outputPath)
+      await local.saveSettings({...local.settings,mcp:{...local.settings.mcp,outputRoots:[directory,directory.toUpperCase()]}})
+      expect(local.settings.mcp.outputRoots).toEqual([directory])
+      await expect(local.plan({...request,outputPath:join(output,'not-authorized.mp4')},'mcp')).rejects.toThrow('输出路径未获授权')
+      await local.saveSettings({...local.settings,mcp:{...local.settings.mcp,inputRoots:[output]}})
+      await expect(local.plan(request,'mcp')).rejects.toThrow('输入路径未获授权')
+      const persisted=JSON.parse(await readFile(join(root,'default-output-profile','config.json'),'utf8'))
+      expect(persisted.settings.mcp.outputRoots).toEqual([directory])
     }finally{await local.shutdown()}
+  })
+  it('安装位置变化只替换自动 outputs 授权；默认目录不可用时标记并保留手动范围',async()=>{
+    const profile=join(root,'relocated-profile'),engines=join(root,'relocated-engines'),oldOutput=join(root,'old-install','outputs'),newOutput=join(root,'new-install','outputs')
+    const first=new MediaService(profile,engines,oldOutput)
+    try{await first.initialize();await first.saveSettings({...first.settings,mcp:{...first.settings.mcp,outputRoots:[oldOutput,output]}})}finally{await first.shutdown()}
+    const moved=new MediaService(profile,engines,newOutput)
+    try{await moved.initialize();expect(moved.settings.mcp.outputRoots).toEqual([newOutput,output]);expect(moved.settings.mcp.inputRoots).toEqual([])}finally{await moved.shutdown()}
+    const blocked=join(root,'blocked-output');await writeFile(blocked,'不是目录')
+    const unavailable=new MediaService(profile,engines,blocked)
+    try{await unavailable.initialize();expect(unavailable.snapshot().defaultMcpOutputPath).toBeUndefined();expect(unavailable.snapshot().notice).toContain('默认输出目录不可写');expect(unavailable.settings.mcp.outputRoots).toEqual([output])}finally{await unavailable.shutdown()}
   })
   it('分析与 H.264 转码、进度、输出检查',async()=>{
     const media=await service.inspect(input);expect(media.streams.map(s=>s.type)).toContain('audio');expect(media.durationMs).toBeGreaterThan(1900)
@@ -190,7 +211,7 @@ describe('MCP HTTP 实际客户端',()=>{
   it('离线指南、资源和 MCP prompt 可实际读取，结构化参考与查询权限一致',async()=>{
     const client=clients.at(-1)!
     const call=async(name:string,args={})=>{const result=await client.callTool({name,arguments:args});expect(result.isError).not.toBe(true);return JSON.parse((result.content as {text:string}[])[0].text)}
-    const catalog=await call('list_skills');expect(catalog).toHaveLength(6)
+    const catalog=await call('list_skills');expect(catalog).toHaveLength(7)
     for(const skill of catalog) {
       const document=await call('read_skill',{id:skill.id});expect(document.markdown).toContain('name: muxivra-');expect(document.version).toBe(skill.version)
       const resource=await client.readResource({uri:skill.uri});expect(resource.contents[0]).toMatchObject({mimeType:'text/markdown',text:document.markdown})
