@@ -103,6 +103,43 @@ try {
     }finally{select(memory,old);deleteObject(bitmap);deleteDC(memory)}
   }finally{releaseDC(0,dc);await page.keyboard.press('Escape');await desktop.evaluate(({BrowserWindow},bounds)=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(false);w.setBounds(bounds)},previousNativeBounds);await page.waitForTimeout(150)}
   console.log('Native video pixels verified');assert.ok(colors.size>6,'Native surface did not render video pixels')
+  // Native HWNDs cannot track Chromium's compositor during a burst of scroll
+  // frames. Verify they are suppressed during movement and restored exactly
+  // once scrolling settles, without seeking or pausing the media session.
+  const scrollState=await state(),getWindowRegion=user.func('int __stdcall GetWindowRgn(uintptr_t window, uintptr_t region)'),makeRegion=gdi.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)'),pointInRegion=gdi.func('bool __stdcall PtInRegion(uintptr_t region, int x, int y)'),disposeRegion=gdi.func('bool __stdcall DeleteObject(uintptr_t object)')
+  await desktop.evaluate(({ipcMain})=>{const original=ipcMain._invokeHandlers.get('muxivra:playerRect');ipcMain.removeHandler('muxivra:playerRect');globalThis.__lastNativeRects=[];ipcMain.handle('muxivra:playerRect',(event,owner,rect)=>{globalThis.__lastNativeRects.push({owner,rect});globalThis.__lastNativeRects=globalThis.__lastNativeRects.slice(-10);return original(event,owner,rect)})})
+  await page.evaluate(()=>{
+    const pad=document.createElement('div');pad.id='native-scroll-fixture';pad.style.height='1600px';document.querySelector('.workspace').append(pad)
+    globalThis.__nativeScrollFinished=false
+    let index=0;const values=[100,230,40,190,80,210,50,180,70,160,110,200]
+    const next=()=>{scrollTo(0,values[index++]);if(index<values.length)setTimeout(next,20);else globalThis.__nativeScrollFinished=true};next()
+  })
+  for(let attempt=0;attempt<20&&isVisible(native);attempt++)await page.waitForTimeout(10)
+  assert.equal(isVisible(native),false,'Native video should not float over a moving DOM viewport')
+  await page.waitForFunction(()=>globalThis.__nativeScrollFinished)
+  for(let attempt=0;attempt<50&&!isVisible(native);attempt++)await page.waitForTimeout(20)
+  assert.equal(isVisible(native),true,'Native video did not return after scrolling stopped')
+  const aligned=await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),nativeOrigin={x:0,y:0},mainOrigin={x:0,y:0},dpi=await page.evaluate(()=>devicePixelRatio);toScreen(native,nativeOrigin);toScreen(main,mainOrigin)
+  assert.ok(Math.abs(nativeOrigin.x-mainOrigin.x-Math.round(aligned.x*dpi))<=1)
+  assert.ok(Math.abs(nativeOrigin.y-mainOrigin.y-Math.round(aligned.y*dpi))<=1)
+  // HRGN may be a sign-extended bigint; converting it to Number truncates the
+  // handle and makes region reads fail intermittently on Windows x64.
+  const visibleRegion=makeRegion(0,0,0,0);assert.ok(visibleRegion)
+  try{
+    let regionResult=0;for(let attempt=0;attempt<100&&!regionResult;attempt++){regionResult=getWindowRegion(native,visibleRegion);if(!regionResult)await page.waitForTimeout(20)}
+    if(!regionResult)console.log('Missing window native region:',JSON.stringify({aligned,regionResult,visibleRegion:String(visibleRegion),nativeOrigin,mainOrigin,dpi,rects:await desktop.evaluate(()=>globalThis.__lastNativeRects),metrics:await page.evaluate(()=>({scrollY,innerHeight,height:document.scrollingElement.scrollHeight,overflow:getComputedStyle(document.body).overflowY}))}));assert.ok(regionResult>0)
+    assert.ok(aligned.y<0,'Scroll regression must place part of the preview above the window')
+    assert.equal(pointInRegion(visibleRegion,Math.round(aligned.width*dpi/2),1),false,'Native video paints above the visible DOM viewport')
+    assert.equal(pointInRegion(visibleRegion,Math.round(aligned.width*dpi/2),Math.round((-aligned.y+8)*dpi)),true)
+  }finally{disposeRegion(visibleRegion)}
+  assert.equal((await state()).positionMs,scrollState.positionMs);assert.equal((await state()).paused,scrollState.paused)
+  await page.evaluate(()=>{scrollTo(0,0);document.getElementById('native-scroll-fixture').remove();delete globalThis.__nativeScrollFinished});await page.waitForTimeout(200)
+  const nestedStyle=await page.locator('[data-player-owner="single"]').getAttribute('style')
+  await page.locator('[data-player-owner="single"]').evaluate(element=>{const viewport=element.querySelector('.mpv-viewport');element.style.height=`${viewport.clientHeight/2}px`;element.style.overflow='auto';element.scrollTop=80})
+  await page.waitForTimeout(220);assert.equal(isVisible(native),true)
+  const nested=await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),container=await page.locator('[data-player-owner="single"]').boundingBox(),nestedRegion=makeRegion(0,0,0,0)
+  try{let regionResult=0;for(let attempt=0;attempt<100&&!regionResult;attempt++){regionResult=getWindowRegion(native,nestedRegion);if(!regionResult)await page.waitForTimeout(20)}if(!regionResult)console.log('Missing nested native region:',JSON.stringify({nested,container,regionResult,rects:await desktop.evaluate(()=>globalThis.__lastNativeRects),metrics:await page.locator('[data-player-owner="single"]').evaluate(element=>({height:element.clientHeight,total:element.scrollHeight,top:element.scrollTop,style:element.getAttribute('style'),overflow:getComputedStyle(element).overflowY}))}));assert.ok(regionResult>0);assert.ok(container.y>nested.y);assert.equal(pointInRegion(nestedRegion,Math.round(nested.width*dpi/2),1),false);assert.equal(pointInRegion(nestedRegion,Math.round(nested.width*dpi/2),Math.round((container.y-nested.y+8)*dpi)),true)}finally{disposeRegion(nestedRegion)}
+  await page.locator('[data-player-owner="single"]').evaluate((element,style)=>{element.scrollTop=0;if(style===null)element.removeAttribute('style');else element.setAttribute('style',style)},nestedStyle);await page.waitForTimeout(220)
   console.log('Video decoded by mpv')
   assert.equal(await page.locator('video,audio').count(),0)
   await page.getByRole('button',{name:'播放',exact:true}).click();await wait(s=>!s.paused&&s.positionMs>300)
@@ -173,7 +210,7 @@ try {
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1040,height:720}));await page.waitForTimeout(300)
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
   assert.deepEqual(errors,[])
-  const report={appVersion:await desktop.evaluate(({app})=>app.getVersion()),executable:process.env.MUXIVRA_EXECUTABLE||'development',version:(await state()).version,features:['video','audio','pause','seek','speed','volume','mute','frames','ab-loop','repeat','audio-tracks','external-audio','external-subtitles','delays','screenshot','fullscreen','playlist'],noProcessingEnginePlayback:true,nativeChildWindow:true,nativeKeyboard:true,nativeVideoPixels:true,menuPerimeterPixelsMatchVideo:true,delayedStateReselectMouseAndKeyboard:true,defaultVolume:50,volumeKeyboardStep:5,volumeDragIgnoresStaleState:true,portraitAndRotationAspect:true,viewportMaxHeight:540,parameterMenuKeepsVideoVisible:true,chromiumMediaElements:0,errors}
+  const report={appVersion:await desktop.evaluate(({app})=>app.getVersion()),executable:process.env.MUXIVRA_EXECUTABLE||'development',version:(await state()).version,features:['video','audio','pause','seek','speed','volume','mute','frames','ab-loop','repeat','audio-tracks','external-audio','external-subtitles','delays','screenshot','fullscreen','playlist'],noProcessingEnginePlayback:true,nativeChildWindow:true,nativeKeyboard:true,nativeVideoPixels:true,menuPerimeterPixelsMatchVideo:true,rapidScrollSuppressesStaleSurface:true,scrollSettledNativeAlignment:true,windowAndAncestorClipping:true,scrollPreservesPositionAndPause:true,delayedStateReselectMouseAndKeyboard:true,defaultVolume:50,volumeKeyboardStep:5,volumeDragIgnoresStaleState:true,portraitAndRotationAspect:true,viewportMaxHeight:540,parameterMenuKeepsVideoVisible:true,chromiumMediaElements:0,errors}
   await writeFile('artifacts/qa/player-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2))
 } finally {
   await desktop.close();const rel=relative(resolve('.test-data'),root);if(rel&&!rel.startsWith(`..${sep}`)&&!isAbsolute(rel))await rm(root,{recursive:true,force:true})

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Play, Pause, Square, SkipBack, SkipForward, Volume2, VolumeX, Camera, Maximize, Minimize, Music2, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 import type { MediaInfo } from '../../shared/types'
-import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerAction } from '../../shared/player'
+import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerAction, type PlayerRect } from '../../shared/player'
 import { Button, Input, Select, Busy } from './ui'
 import type { RunAction } from './Jobs'
 import { formatTime, parseTime, nameOf } from '../lib/utils'
@@ -12,9 +12,17 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
   const shortcuts=useShortcuts()
   const [state,setState]=useState(()=>emptyPlayerState(owner)),[error,setError]=useState(''),[scrub,setScrub]=useState<number>(),[jump,setJump]=useState('00:00:00,000'),[volumeDraft,setVolumeDraft]=useState<number>()
   const volumeControl=useRef<{value?:number;pending?:number;sending:boolean;editing:boolean}>({sending:false,editing:false})
+  const surfaceControl=useRef<{pending?:PlayerRect;sending:boolean}>({sending:false})
   const viewport=useRef<HTMLDivElement>(null),callbacks=useRef({onState,onMediaChange});callbacks.current={onState,onMediaChange}
   const hasVideo=state.tracks.some(track=>track.type==='video'&&!track.external)
   const usable=state.ready&&!!state.path&&!state.loading&&!state.error
+  function synchronizeSurface(rect:PlayerRect){
+    // Only the most recent geometry is useful after a slow IPC round trip.
+    // Drain in order and never accumulate stale positions during scrolling.
+    const control=surfaceControl.current;control.pending=rect;if(control.sending)return
+    control.sending=true
+    void(async()=>{try{while(control.pending){const latest=control.pending;control.pending=undefined;await window.muxivra.playerRect(owner,latest)}}catch(error){setError((error as Error).message)}finally{control.sending=false;if(control.pending)synchronizeSurface(control.pending)}})()
+  }
   async function flushVolume(){
     const control=volumeControl.current;if(control.sending)return
     control.sending=true
@@ -46,29 +54,73 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
   const mediaKey=JSON.stringify([state.path,state.durationMs,state.tracks])
   useEffect(()=>{let live=true;if(state.path&&!state.loading)void window.muxivra.playerMedia(owner).then(info=>{if(live&&info)callbacks.current.onMediaChange?.(info)}).catch(error=>setError(error.message));return()=>{live=false}},[mediaKey,state.loading,owner])
   useEffect(()=>{
-    let frame=0,last=''
+    let frame=0,last='',scrolling=false,settle:ReturnType<typeof setTimeout>|undefined
     const update=()=>{
-      frame=0;const bounds=viewport.current?.getBoundingClientRect();if(!bounds)return
+      const bounds=viewport.current?.getBoundingClientRect();if(!bounds)return
       const shown=active&&document.visibilityState==='visible'
+      // Chromium scrolls its compositor independently from the native child
+      // window. Suppress that child while its DOM host is moving; restoring
+      // it only at the final bounds avoids displaying an out-of-date frame.
+      if(scrolling){
+        const key='scrolling';if(last!==key){last=key;synchronizeSurface({x:0,y:0,width:0,height:0,scale:window.devicePixelRatio,visible:false,active})}
+        return
+      }
+      let left=Math.max(0,bounds.left),top=Math.max(0,bounds.top),right=Math.min(window.innerWidth,bounds.right),bottom=Math.min(window.innerHeight,bounds.bottom)
+      // A native HWND does not inherit CSS overflow clipping. Include every
+      // scrolling/clipping ancestor, as subtitle panes can scroll separately.
+      // Fullscreen is fixed to the window; the ordinary preview card is no
+      // longer its clipping ancestor. Window/overlay clipping still applies.
+      for(let parent=state.fullscreen?null:viewport.current?.parentElement;parent;parent=parent.parentElement){
+        const style=getComputedStyle(parent),box=parent.getBoundingClientRect()
+        if(/^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowX)){left=Math.max(left,box.left+parent.clientLeft);right=Math.min(right,box.left+parent.clientLeft+parent.clientWidth)}
+        if(/^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowY)){top=Math.max(top,box.top+parent.clientTop);bottom=Math.min(bottom,box.top+parent.clientTop+parent.clientHeight)}
+      }
+      const clipping=[
+        {x:0,y:0,width:Math.max(0,left-bounds.left),height:bounds.height},
+        {x:Math.max(0,right-bounds.left),y:0,width:Math.max(0,bounds.right-right),height:bounds.height},
+        {x:0,y:0,width:bounds.width,height:Math.max(0,top-bounds.top)},
+        {x:0,y:Math.max(0,bottom-bounds.top),width:bounds.width,height:Math.max(0,bounds.bottom-bottom)}
+      ].filter(cut=>cut.width>0&&cut.height>0)
       // Keep the full overlay bounds and corner radius: clipping them to the
       // viewport first would move rounded corners when a popup crosses its edge.
       const exitOpen=!!document.querySelector('.exit-dialog')
-      const occlusions=Array.from(document.querySelectorAll('[role="dialog"],[role="listbox"],.toast,.player-loading,.operation-status')).slice(0,32).flatMap(element=>{const overlay=element.getBoundingClientRect(),style=getComputedStyle(element),radius=Math.min(...[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overlay.width/2,overlay.height/2);return overlay.right>bounds.left&&overlay.left<bounds.right&&overlay.bottom>bounds.top&&overlay.top<bounds.bottom?[{x:overlay.x-bounds.x,y:overlay.y-bounds.y,width:overlay.width,height:overlay.height,radius}]:[]})
-      const rect={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,scale:window.devicePixelRatio,visible:shown&&hasVideo&&!exitOpen&&bounds.bottom>0&&bounds.top<window.innerHeight,active,occlusions}
+      const occlusions=[...clipping,...Array.from(document.querySelectorAll('[role="dialog"],[role="listbox"],.toast,.player-loading,.operation-status')).slice(0,32-clipping.length).flatMap(element=>{const overlay=element.getBoundingClientRect(),style=getComputedStyle(element),radius=Math.min(...[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overlay.width/2,overlay.height/2);return overlay.right>bounds.left&&overlay.left<bounds.right&&overlay.bottom>bounds.top&&overlay.top<bounds.bottom?[{x:overlay.x-bounds.x,y:overlay.y-bounds.y,width:overlay.width,height:overlay.height,radius}]:[]})]
+      const rect={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,scale:window.devicePixelRatio,visible:shown&&hasVideo&&!exitOpen&&right>left&&bottom>top,active,occlusions}
       const key=JSON.stringify(rect);if(key===last)return;last=key
-      void window.muxivra.playerRect(owner,rect).catch(error=>setError(error.message))
+      synchronizeSurface(rect)
     }
-    const schedule=()=>{if(!frame)frame=requestAnimationFrame(update)}
+    const schedule=()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;update()})}
+    const beginScroll=()=>{
+      scrolling=true;update();if(settle)clearTimeout(settle)
+      settle=setTimeout(()=>{settle=undefined;scrolling=false;schedule()},120)
+    }
+    const scroll=(event:Event)=>{if(!state.fullscreen&&(event.target===document||event.target===window||(event.target instanceof Element&&event.target.contains(viewport.current))))beginScroll()}
+    const wheel=(event:WheelEvent)=>{
+      if(state.fullscreen||event.ctrlKey||(!event.deltaX&&!event.deltaY)||!(event.target instanceof Element))return
+      if(event.target.closest('[role="listbox"],[role="dialog"],.select-scroll-track'))return
+      // Ignore dropdown/table scrolling that does not move the preview. Hide
+      // before the browser applies a page wheel movement, rather than waiting
+      // for its asynchronous scroll notification.
+      for(let element:Element|null=event.target;element;element=element.parentElement){
+        const style=getComputedStyle(element)
+        const movesY=event.deltaY&&/^(auto|scroll|overlay)$/.test(style.overflowY)&&element.scrollHeight>element.clientHeight&&(event.deltaY>0?element.scrollTop+element.clientHeight<element.scrollHeight:element.scrollTop>0)
+        const movesX=event.deltaX&&/^(auto|scroll|overlay)$/.test(style.overflowX)&&element.scrollWidth>element.clientWidth&&(event.deltaX>0?element.scrollLeft+element.clientWidth<element.scrollWidth:element.scrollLeft>0)
+        if(movesY||movesX){if(element.contains(viewport.current))beginScroll();return}
+      }
+      const element=document.scrollingElement;if(element&&((event.deltaY>0&&element.scrollTop+element.clientHeight<element.scrollHeight)||(event.deltaY<0&&element.scrollTop>0)||(event.deltaX>0&&element.scrollLeft+element.clientWidth<element.scrollWidth)||(event.deltaX<0&&element.scrollLeft>0)))beginScroll()
+    }
     const resize=new ResizeObserver(schedule);if(viewport.current)resize.observe(viewport.current)
     const mutation=new MutationObserver(schedule);mutation.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden','style']})
-    window.addEventListener('resize',schedule);window.addEventListener('scroll',schedule,true);document.addEventListener('visibilitychange',schedule);schedule()
-    return()=>{resize.disconnect();mutation.disconnect();cancelAnimationFrame(frame);window.removeEventListener('resize',schedule);window.removeEventListener('scroll',schedule,true);document.removeEventListener('visibilitychange',schedule)}
+    window.addEventListener('resize',schedule);window.addEventListener('scroll',scroll,true);window.addEventListener('wheel',wheel,{capture:true,passive:true});document.addEventListener('visibilitychange',schedule);schedule()
+    return()=>{resize.disconnect();mutation.disconnect();cancelAnimationFrame(frame);if(settle)clearTimeout(settle);window.removeEventListener('resize',schedule);window.removeEventListener('scroll',scroll,true);window.removeEventListener('wheel',wheel,true);document.removeEventListener('visibilitychange',schedule)}
   },[active,hasVideo,state.ready,state.error,state.fullscreen,owner])
-  useEffect(()=>()=>{void window.muxivra.playerRect(owner,{x:0,y:0,width:0,height:0,scale:1,visible:false,active:false}).catch(()=>{})},[owner])
+  useEffect(()=>()=>{synchronizeSurface({x:0,y:0,width:0,height:0,scale:1,visible:false,active:false})},[owner])
   useEffect(()=>{
     if(!active||!usable)return
     const listener=(event:KeyboardEvent)=>{
       if(event.defaultPrevented||isShortcutInput(event.target)||document.querySelector('[role="dialog"], [role="listbox"]'))return
+      // Range controls already implement their own directional adjustments.
+      if((event.target as Element)?.closest('input[type="range"]')&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(event.code))return
       const currentVolume=volumeControl.current.value??state.volume
       const actions:Partial<Record<ShortcutId,PlayerAction>>={'player.toggle':{type:'toggle'},'player.seekBackward':{type:'seek-relative',offsetMs:owner==='subtitles'?-100:-5000},'player.seekForward':{type:'seek-relative',offsetMs:owner==='subtitles'?100:5000},'player.volumeUp':{type:'volume',value:Math.min(100,currentVolume+5)},'player.volumeDown':{type:'volume',value:Math.max(0,currentVolume-5)},'player.mute':{type:'mute',value:!state.muted},'player.fullscreen':{type:'fullscreen'},'player.frameNext':{type:'frame-next'},'player.framePrevious':{type:'frame-previous'}}
       const shortcut=(Object.keys(actions) as ShortcutId[]).find(id=>matchShortcut(event,id,shortcuts))
@@ -76,7 +128,7 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
       else if(shortcut){event.preventDefault();act(actions[shortcut]!)}
       else if(matchShortcut(event,'player.screenshot',shortcuts)){event.preventDefault();void run(()=>window.muxivra.playerScreenshot(owner),'截图已保存')}
     }
-    window.addEventListener('keydown',listener);return()=>window.removeEventListener('keydown',listener)
+    window.addEventListener('keydown',listener,true);return()=>window.removeEventListener('keydown',listener,true)
   },[active,usable,state.volume,state.muted,state.fullscreen,owner,shortcuts])
   const title=(label:string,id:ShortcutId)=>shortcuts[id]?`${label} · ${formatShortcut(shortcuts[id])}`:label
   const actionShortcut:Partial<Record<PlayerAction['type'],ShortcutId>>={toggle:'player.toggle',mute:'player.mute',fullscreen:'player.fullscreen','frame-next':'player.frameNext','frame-previous':'player.framePrevious'}
@@ -88,7 +140,7 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
       {!hasVideo&&<div className="audio-summary"><Music2 size={28}/><div><strong>{state.title||nameOf(path)}</strong><span>{tracks('audio').map(track=>[track.codec,track['demux-channel-count']?`${track['demux-channel-count']} 声道`:undefined,track['demux-samplerate']?`${track['demux-samplerate']} Hz`:undefined].filter(Boolean).join(' · ')).join(' / ')}</span></div></div>}
       {state.loading&&<span className="player-loading" role="status"><Busy text="正在载入…"/></span>}
     </div>
-    <div className="player-controls"><div className="player-seek"><code>{formatTime(scrub??state.positionMs)}</code><input type="range" aria-label="播放进度" min={0} max={Math.max(1,state.durationMs)} step={1} disabled={!usable} value={Math.min(scrub??state.positionMs,Math.max(1,state.durationMs))} onChange={event=>setScrub(+event.target.value)} onPointerUp={event=>{act({type:'seek',positionMs:+event.currentTarget.value});setScrub(undefined)}} onKeyUp={event=>{act({type:'seek',positionMs:+event.currentTarget.value});setScrub(undefined)}}/><code>{formatTime(state.durationMs)}</code></div>
+    <div className="player-controls"><div className="player-seek"><code>{formatTime(scrub??state.positionMs)}</code><input type="range" aria-label="播放进度" min={0} max={Math.max(1,state.durationMs)} step={1} disabled={!usable} value={Math.min(scrub??state.positionMs,Math.max(1,state.durationMs))} onChange={event=>setScrub(+event.target.value)} onPointerUp={event=>{act({type:'seek',positionMs:+event.currentTarget.value});setScrub(undefined)}} onKeyUp={event=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(event.code)){act({type:'seek',positionMs:+event.currentTarget.value});setScrub(undefined)}}}/><code>{formatTime(state.durationMs)}</code></div>
       <div className="player-toolbar">
         {icon('上一项',SkipBack,{type:'playlist-play',index:Math.max(0,state.playlistIndex-1)},state.playlistIndex<=0)}
         {icon(state.paused?'播放':'暂停',state.paused?Play:Pause,{type:'toggle'})}

@@ -18,12 +18,14 @@ describe.runIf(process.platform==='win32')('实际内置 mpv 的可编辑按键'
       const initial=mpvShortcutBindings(defaultShortcuts,'subtitles')
       for(const [key,command] of initial)await ipc.command(['keybind',key,command])
       await ipc.command(['keypress','SPACE']);await waitCount(1);expect(messages[0]).toBe('muxivra-toggle')
+      await ipc.command(['keypress','q']);await waitCount(2);expect(messages[1]).toBe('muxivra-set-start')
+      await ipc.command(['keypress','e']);await waitCount(3);expect(messages[2]).toBe('muxivra-set-end')
       const next=mpvShortcutBindings({...defaultShortcuts,'player.toggle':'Ctrl+KeyP','player.screenshot':''},'subtitles')
       for(const key of initial.keys())if(!next.has(key))await ipc.command(['keybind',key,'ignore'])
       for(const [key,command] of next)await ipc.command(['keybind',key,command])
-      await ipc.command(['keypress','SPACE']);await ipc.command(['keypress','s']);await new Promise(resolve=>setTimeout(resolve,100));expect(messages).toHaveLength(1)
-      await ipc.command(['keypress','Ctrl+p']);await waitCount(2);expect(messages[1]).toBe('muxivra-toggle')
-      await ipc.command(['keypress','Ctrl+Z']);await waitCount(3);expect(messages[2]).toBe('muxivra-redo')
+      await ipc.command(['keypress','SPACE']);await ipc.command(['keypress','s']);await new Promise(resolve=>setTimeout(resolve,100));expect(messages).toHaveLength(3)
+      await ipc.command(['keypress','Ctrl+p']);await waitCount(4);expect(messages[3]).toBe('muxivra-toggle')
+      await ipc.command(['keypress','Ctrl+Z']);await waitCount(5);expect(messages[4]).toBe('muxivra-redo')
       for(const combination of ['Shift+Digit3','Ctrl+Shift+Equal','Alt+Shift+Period']){
         const key=toMpvKey(combination)!,count=messages.length
         await ipc.command(['keybind',key,'script-message muxivra-check'])

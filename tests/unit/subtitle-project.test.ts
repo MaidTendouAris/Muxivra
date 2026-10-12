@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 import { SubtitleProjectStore, SUBTITLE_AUTOSAVE_MS, subtitleSidecar } from '../../src/core/subtitles/project'
 import { PathPolicy, isWithin } from '../../src/core/media/paths'
-import { createSubtitleDocument } from '../../src/shared/subtitles'
+import { createSubtitleDocument, normalizeSubtitleDocument } from '../../src/shared/subtitles'
 import { serializeAss, parseAss } from '../../src/core/subtitles/ass'
 import { JsonStore } from '../../src/core/storage/json'
 import type { SubtitleDocument } from '../../src/shared/types'
@@ -138,6 +139,7 @@ describe('ASS 工程安全与恢复', () => {
     // The failure above occurs at final save-state persistence, after ASS publish.
     const restored = new SubtitleProjectStore(profile, new PathPolicy()); stores.push(restored); await restored.initialize()
     expect(restored.get()?.cues[0].text).toBe('已发布但索引失败'); expect(restored.state().recoveryPending).toBeUndefined()
+    expect(restored.state().canDeleteProject).toBe(true)
     expect(parseAss(await readFile(document.projectPath!, 'utf8')).cues[0].text).toBe('已发布但索引失败')
   })
   it('多次保存只保留20份之前版本的ASS备份', async () => {
@@ -146,6 +148,84 @@ describe('ASS 工程安全与恢复', () => {
     const backup = store.state().backupPath!, backups = await readdir(dirnameForTest(backup))
     expect(backups.filter(name => name.endsWith('.ass'))).toHaveLength(20)
     expect(await readFile(backup, 'utf8')).toContain('第21版')
+  })
+  it('删除应用创建的ASS后清空恢复状态，旧缓存和退出保存不会复活工程，源媒体不变', async () => {
+    const { store, media, profile } = await setup(), document = await store.openMedia(media)
+    await store.cache(addText(document, '尚未保存的临时字幕'))
+    expect(store.state().canDeleteProject).toBe(true)
+    const blank = await store.deleteProject(document.id)
+    expect(blank.id).not.toBe(document.id); expect(blank.projectPath).toBeUndefined(); expect(blank.cues).toHaveLength(0)
+    await expect(readFile(document.projectPath!)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(store.cache(document)).rejects.toThrow('旧编辑请求')
+    await store.shutdown()
+    const restored = new SubtitleProjectStore(profile, new PathPolicy()); stores.push(restored); await restored.initialize()
+    expect(restored.get()?.id).toBe(blank.id); expect(restored.get()?.projectPath).toBeUndefined(); expect(restored.state().canDeleteProject).toBe(false)
+    await expect(readFile(document.projectPath!)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(media, 'utf8')).toBe('source media, never overwrite')
+  })
+  it('已有和直接导入ASS不能作为临时工程删除', async () => {
+    const { store, media, paths } = await setup(), path = subtitleSidecar(media), original = serializeAss(addText(createSubtitleDocument(), '用户原有字幕'))
+    await writeFile(path, original); const document = await store.openMedia(media)
+    expect(store.state().canDeleteProject).toBe(false); await expect(store.deleteProject(document.id)).rejects.toThrow('原有或导入')
+    await paths.grantFile(path); const imported = await store.import(path)
+    await expect(store.deleteProject(imported.id)).rejects.toThrow('原有或导入'); expect(await readFile(path, 'utf8')).toBe(original)
+  })
+  it('SRT转换得到的临时ASS可删除，输入字幕和备份保留', async () => {
+    const { store, root, paths } = await setup(), path = join(root, 'source.srt'), original = '1\n00:00:00,123 --> 00:00:01,234\n原字幕\n'
+    await writeFile(path, original); await paths.grantFile(path); const document = await store.import(path)
+    await store.save(addText(document)); const backup = store.state().backupPath!
+    expect(store.state().canDeleteProject).toBe(true); await store.deleteProject(document.id)
+    expect(await readFile(path, 'utf8')).toBe(original); expect(await readFile(backup, 'utf8')).toContain('原字幕')
+  })
+  it('创建记录跨重启和重新载入保留，不把生成的ASS误判为原始输入', async () => {
+    const { store, media, profile } = await setup(), document = await store.openMedia(media); await store.shutdown()
+    const restored = new SubtitleProjectStore(profile, new PathPolicy()); stores.push(restored); await restored.initialize()
+    expect(restored.state()).toMatchObject({ canDeleteProject: true, dirty: false })
+    const reopened = await restored.openMedia(media); expect(reopened.sourcePath).toBeUndefined(); expect(restored.state().canDeleteProject).toBe(true)
+    await restored.deleteProject(reopened.id); await expect(readFile(document.projectPath!)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it('旧0.11创建的媒体工程安全迁移，原有ASS仍受保护', async () => {
+    const { store, profile, media } = await setup(), document = await store.openMedia(media); await store.shutdown()
+    const path = join(profile, 'subtitle-session.json'), recovery = JSON.parse(await readFile(path, 'utf8')); delete recovery.createdProjects
+    // v0.11 hashed normalized JSON in insertion order, before schema parsing.
+    recovery.document = Object.fromEntries(Object.entries(recovery.document).reverse())
+    recovery.savedDigest = createHash('sha256').update(JSON.stringify(normalizeSubtitleDocument(recovery.document))).digest('hex')
+    await writeFile(path, JSON.stringify(recovery))
+    const migrated = new SubtitleProjectStore(profile, new PathPolicy()); stores.push(migrated); await migrated.initialize()
+    expect(migrated.state()).toMatchObject({ canDeleteProject: true, dirty: false }); expect(migrated.state().recoveryPending).toBeUndefined()
+    await migrated.deleteProject(document.id)
+  })
+  it('旧0.11纯hash会话中的真实未保存草稿保持dirty，不被排序迁移吞掉', async () => {
+    const { store, profile, media } = await setup(), document = await store.openMedia(media)
+    await store.save(addText(document, '磁盘上已保存的字幕')); await store.shutdown()
+    const path = join(profile, 'subtitle-session.json'), recovery = JSON.parse(await readFile(path, 'utf8')); delete recovery.createdProjects
+    recovery.savedDigest = createHash('sha256').update(JSON.stringify(normalizeSubtitleDocument(recovery.document))).digest('hex')
+    recovery.document = normalizeSubtitleDocument(addText(recovery.document, '尚未保存的恢复草稿'))
+    await writeFile(path, JSON.stringify(recovery))
+    const migrated = new SubtitleProjectStore(profile, new PathPolicy()); stores.push(migrated); await migrated.initialize()
+    expect(migrated.state()).toMatchObject({ canDeleteProject: true, dirty: true }); expect(migrated.state().recoveryPending).toBeUndefined()
+    expect(migrated.get()?.cues[0].text).toBe('尚未保存的恢复草稿')
+    expect(parseAss(await readFile(document.projectPath!, 'utf8')).cues[0].text).toBe('磁盘上已保存的字幕')
+  })
+  it('拒绝删除外部修改的工程和旧工程身份', async () => {
+    const { store, media } = await setup(), document = await store.openMedia(media), external = serializeAss(addText(createSubtitleDocument(), '其他程序修改'))
+    await expect(store.deleteProject('old-project')).rejects.toThrow('旧删除请求')
+    await writeFile(document.projectPath!, external); await expect(store.deleteProject(document.id)).rejects.toThrow('停止删除')
+    expect(await readFile(document.projectPath!, 'utf8')).toBe(external); expect(store.get()?.id).toBe(document.id)
+  })
+  it('离开后同路径ASS被外部替换，再载入不能沿用旧删除权限', async () => {
+    const { store, media, root, paths } = await setup(), document = await store.openMedia(media), other = join(root, 'other.wav')
+    await writeFile(other, 'other media'); await paths.grantFile(other); await store.openMedia(other)
+    const replacement = serializeAss(addText(createSubtitleDocument(), '用户替换的字幕'))
+    await writeFile(document.projectPath!, replacement); const reopened = await store.openMedia(media)
+    expect(reopened.sourcePath).toBe(document.projectPath); expect(store.state().canDeleteProject).toBe(false)
+    await expect(store.deleteProject(reopened.id)).rejects.toThrow('原有或导入'); expect(await readFile(document.projectPath!, 'utf8')).toBe(replacement)
+  })
+  it('删除前恢复索引写入失败时，临时ASS和活动工程保持可恢复', async () => {
+    const { store, media } = await setup(), document = await store.openMedia(media), contents = await readFile(document.projectPath!, 'utf8')
+    const spy = vi.spyOn(JsonStore.prototype, 'write').mockRejectedValueOnce(new Error('模拟索引失败'))
+    await expect(store.deleteProject(document.id)).rejects.toThrow('模拟索引失败'); spy.mockRestore()
+    expect(store.get()?.id).toBe(document.id); expect(await readFile(document.projectPath!, 'utf8')).toBe(contents)
   })
 })
 function dirnameForTest(path: string) { return join(path, '..') }

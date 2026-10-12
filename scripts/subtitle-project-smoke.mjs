@@ -1,6 +1,6 @@
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
-import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, chmod } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile, rm, readdir, chmod, copyFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -14,7 +14,9 @@ await mkdir('.test-data',{recursive:true});await mkdir('artifacts/qa',{recursive
 const root=await mkdtemp(resolve('.test-data','subtitle-project-')),profile=join(root,'profile'),engines=join(root,'engines')
 const video=join(root,'字幕视频.mp4'),audio=join(root,'existing-audio.wav'),project=join(root,'字幕视频.ass'),existing=join(root,'existing-audio.ass'),srt=join(root,'source.srt'),ssa=join(root,'legacy.ssa'),largeSrt=join(root,'large.srt')
 const exportedAss=join(root,'exported.ass'),exportedSrt=join(root,'exported.srt'),exportedSsa=join(root,'exported.ssa'),conflictCopy=join(root,'conflict-copy.ass')
+const deleteVideo=join(root,'delete-project.mp4'),deleteAss=join(root,'delete-project.ass')
 await exec('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=480x270:rate=24','-f','lavfi','-i','sine=frequency=440','-t','8','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',video],{windowsHide:true})
+await copyFile(video,deleteVideo)
 await exec('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=660','-t','4',audio],{windowsHide:true})
 await writeFile(srt,'1\r\n00:00:00,123 --> 00:00:01,234\r\n第一行\r\nSecond line\r\n\r\n2\r\n00:00:02,000 --> 00:00:03,000\r\n第二条\r\n')
 const srtTime=ms=>`${String(Math.floor(ms/3600000)).padStart(2,'0')}:${String(Math.floor(ms/60000)%60).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')},${String(ms%1000).padStart(3,'0')}`
@@ -54,7 +56,7 @@ Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: Marked=0,0:00:00.00,0:00:02.00,Default,,0,0,0,,SSA 导入验证\\N第二行
 `)
 const digest=async path=>createHash('sha256').update(await readFile(path)).digest('hex')
-const protectedSources=await Promise.all([video,audio,srt,ssa,largeSrt].map(async path=>({path,sha256:await digest(path)})))
+const protectedSources=await Promise.all([video,deleteVideo,audio,srt,ssa,largeSrt].map(async path=>({path,sha256:await digest(path)})))
 const launch=()=>electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:engines},timeout:60000})
 let desktop=await launch(),page,originalClipboard
 const errors=[],report={executable:process.env.MUXIVRA_EXECUTABLE||'development build',errors}
@@ -67,6 +69,22 @@ async function saveDestination(path){await desktop.evaluate(({dialog},path)=>{di
 async function openEditor(){page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000});await page.locator('.navigation').getByRole('button',{name:'字幕编辑',exact:true}).click()}
 async function waitPlayer(){return poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>state.ready&&!state.loading&&!!state.path,'Subtitle mpv readiness')}
 async function screenshot(name){await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:`artifacts/qa/${name}.png`,fullPage:true})}
+async function verifyEditorLayout(){
+  await page.evaluate(()=>window.scrollTo(0,0))
+  const geometry=await page.evaluate(()=>{
+    const box=selector=>{const {top,bottom,left,right,height}=document.querySelector(selector).getBoundingClientRect();return {top,bottom,left,right,height}}
+    return {height:innerHeight,preview:box('.subtitle-preview-card'),list:box('.subtitle-list-card'),editor:box('.subtitle-edit-card'),footer:box('.subtitle-project-card'),viewport:box('.subtitle-preview-card .mpv-viewport'),table:document.querySelector('.subtitle-event-table')?box('.subtitle-event-table'):undefined}
+  })
+  assert.ok(geometry.preview.top>=0&&geometry.preview.bottom<=geometry.height,'Preview outside window')
+  assert.ok(geometry.list.top<geometry.height-100&&geometry.list.bottom<=geometry.height,'Cue list not visible with editor')
+  assert.ok(geometry.editor.top>=0&&geometry.editor.bottom<=geometry.height,'Edit card outside window')
+  assert.ok(geometry.editor.left>=geometry.list.right-1,'Editor must sit beside the cue list')
+  assert.ok(geometry.footer.top>=geometry.list.bottom-2,'Project toolbar must be below workspace')
+  assert.ok(geometry.footer.bottom<=geometry.height,'Project toolbar must fit inside the window')
+  assert.ok(geometry.viewport.height<=206,'Subtitle preview is too tall')
+  if(geometry.table)assert.ok(geometry.table.height>=100,'Cue table must retain a usable scrollable area')
+  return geometry
+}
 async function chooseFormat(format){await page.getByRole('combobox',{name:'导出格式',exact:true}).click();await page.locator(`[role="option"][data-value="${format}"]`).click()}
 async function saveProject(){await page.getByRole('button',{name:'保存工程',exact:true}).click();await poll(projectState,state=>!state.saving&&!state.dirty&&!state.error,'Project save')}
 async function loadMedia(path){await selectFile(path);const button=page.getByRole('button',{name:'载入媒体',exact:true});await button.click();await poll(()=>button.isEnabled(),value=>value,'Media import complete');await poll(currentDocument,doc=>doc?.mediaPath===path,'Media project');await waitPlayer()}
@@ -86,13 +104,41 @@ try{
   await waitPlayer();report.mediaImportCreatesSameDirectoryAssImmediately=true
 
   await page.getByRole('button',{name:'新增字幕',exact:true}).click()
+  await poll(currentDocument,doc=>doc?.cues.length===1,'New cue recovery cache')
+  const newCue=page.getByRole('button',{name:'新增字幕',exact:true})
+  const pausedBefore=(await page.evaluate(()=>window.muxivra.playerState('subtitles'))).paused
+  await newCue.press('Space');await poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>state.paused!==pausedBefore,'Space after focused New cue')
+  await newCue.press('Space');await poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>state.paused===pausedBefore,'Space toggles back after focused New cue')
+  assert.equal((await currentDocument()).cues.length,1,'Space should play/pause without clicking New cue again')
+  const seek=page.getByLabel('播放进度',{exact:true})
+  await seek.fill('1500');await seek.dispatchEvent('pointerup')
+  await poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>Math.abs(state.positionMs-1500)<150&&state.paused,'Seek for Q default')
+  await newCue.press('q');await poll(currentDocument,doc=>Math.abs(doc?.cues[0]?.startMs-1500)<150,'Q sets subtitle start from focused button')
+  await seek.fill('2500');await seek.dispatchEvent('pointerup')
+  await poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>Math.abs(state.positionMs-2500)<150&&state.paused,'Seek for E default')
+  await newCue.press('e');await poll(currentDocument,doc=>Math.abs(doc?.cues[0]?.endMs-2500)<150,'E sets subtitle end from focused button')
+  await page.getByLabel('字幕文本',{exact:true}).focus();await page.keyboard.press('Space')
+  assert.equal((await page.evaluate(()=>window.muxivra.playerState('subtitles'))).paused,true,'Text editing must not toggle playback')
+  report.pageShortcutsAfterButtonFocusAndTextEditorExclusion=true
+  await page.locator('.navigation').getByRole('button',{name:'设置',exact:true}).click()
+  await page.getByRole('heading',{name:'设置',exact:true}).waitFor()
+  await page.locator('.navigation').getByRole('button',{name:'设置',exact:true}).press('Space')
+  assert.equal((await page.evaluate(()=>window.muxivra.playerState('subtitles'))).paused,true,'Hidden subtitle page must not respond to player shortcuts')
+  await page.locator('.navigation').getByRole('button',{name:'字幕编辑',exact:true}).click()
+  report.shortcutsFollowActivePage=true
   await page.getByLabel('字幕文本',{exact:true}).fill('{\\i1}第一行, 验证字幕{\\i0}\nSecond line')
   await page.getByLabel('结束时间',{exact:true}).fill('00:00:02,500');await page.getByLabel('结束时间',{exact:true}).press('Enter')
+  const beforeStyles=await page.evaluate(()=>window.muxivra.playerState('subtitles'))
+  assert.ok(beforeStyles.positionMs>1000&&beforeStyles.paused)
   await page.getByRole('button',{name:'样式与脚本设置',exact:true}).click()
   await page.getByLabel('字号',{exact:true}).fill('40')
   await page.getByLabel('文字颜色',{exact:true}).fill('#ffcc44')
   await screenshot('subtitle-styles-dark')
   await page.getByRole('button',{name:'返回字幕编辑',exact:true}).click()
+  const afterStyles=await poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>state.ready&&!state.loading,'Player after returning from styles')
+  assert.ok(Math.abs(afterStyles.positionMs-beforeStyles.positionMs)<=200,'Styles return must retain playback position')
+  assert.equal(afterStyles.paused,beforeStyles.paused);assert.deepEqual(afterStyles.playlist,beforeStyles.playlist)
+  report.styleSecondaryReturnPreservesPlayerPositionAndPlaylist=true
   await poll(currentDocument,doc=>doc?.cues[0]?.text.includes('Second line')&&doc.styles?.find(s=>s.name==='Default')?.fontSize===40,'Multiline and style edit')
   const preview=await poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>state.tracks.filter(t=>t.type==='sub'&&t.external).length===1,'ASS preview')
   const previewPath=preview.tracks.find(t=>t.type==='sub'&&t.external)['external-filename']
@@ -177,6 +223,7 @@ try{
   await loadMedia(audio);const existingDoc=await currentDocument()
   assert.equal(existingDoc.projectPath,existing);assert.ok(existingDoc.cues.some(c=>c.text.includes('已有字幕, 含逗号')));assert.ok(existingDoc.cues.some(c=>c.comment));assert.equal(await digest(existing),existingHash)
   assert.ok(existingDoc.sections.some(section=>section.name==='Muxivra Fixture'));report.existingSameNameAssLoadedWithoutOverwriting=true
+  assert.equal(await page.getByRole('button',{name:'删除工程',exact:true}).isDisabled(),true);report.originalAssDeletionDisabled=true
   await page.locator('[data-cue-id]').first().click();await page.getByLabel('字幕文本',{exact:true}).fill('已有工程保存验证\n第二行')
   await saveProject();const existingState=await projectState();assert.equal(await readFile(existingState.backupPath,'utf8'),assFixture)
   assert.ok((await readFile(existing,'utf8')).includes('Unrecognized: preserve this field'));report.existingAssUnknownSectionsAndOriginalBackupPreserved=true
@@ -214,9 +261,22 @@ try{
   const snapshot=await page.evaluate(()=>window.muxivra.snapshot());await page.evaluate(settings=>window.muxivra.saveSettings(settings),{...snapshot.settings,theme:'light'})
   await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');await screenshot('subtitle-project-light')
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1040,height:720}))
-  await page.waitForTimeout(200);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth));await screenshot('subtitle-project-minimum');report.darkLightAndMinimumWindowNoOverflow=true
+  await page.waitForTimeout(200);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth));report.minimumEditorLayout=await verifyEditorLayout();await screenshot('subtitle-project-minimum');report.darkLightAndMinimumWindowNoOverflow=true
   await chooseFormat('ass');await page.getByRole('button',{name:'样式与脚本设置',exact:true}).click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth));await screenshot('subtitle-styles-minimum');await page.getByRole('button',{name:'返回字幕编辑',exact:true}).click();await saveProject();report.styleSecondaryPageAtMinimumWindowNoOverflow=true
   const backupKey=createHash('sha256').update(existingDoc.id).digest('hex').slice(0,32),backups=await readdir(join(profile,'subtitle-backups',backupKey));assert.ok(backups.length<=20);report.backupRetentionWithinTwenty=true
+
+  await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1440,height:900}));await page.waitForTimeout(200)
+  await loadMedia(deleteVideo);report.normalEditorLayout=await verifyEditorLayout()
+  await desktop.evaluate(({ipcMain})=>{const key='muxivra:deleteSubtitleProject',original=ipcMain._invokeHandlers.get(key);ipcMain.removeHandler(key);ipcMain.handle(key,async(event,...args)=>{await new Promise(r=>setTimeout(r,650));return original(event,...args)})})
+  await page.getByRole('button',{name:'删除工程',exact:true}).click();const deleteDialog=page.getByRole('dialog',{name:'删除临时 ASS 工程？',exact:true});await deleteDialog.waitFor()
+  await deleteDialog.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await readFile(deleteAss,'utf8').then(()=>true),true)
+  const deletedId=(await currentDocument()).id
+  await page.getByRole('button',{name:'删除工程',exact:true}).click();await deleteDialog.getByRole('button',{name:'删除工程',exact:true}).click()
+  const deleting=deleteDialog.getByRole('button',{name:/删除工程中/});await deleting.waitFor();assert.equal(await deleting.getAttribute('aria-busy'),'true')
+  await poll(currentDocument,doc=>doc.id!==deletedId&&!doc.projectPath&&doc.cues.length===0,'Deleted project reset')
+  assert.equal(await readFile(deleteAss,'utf8').then(()=>true).catch(()=>false),false);assert.ok((await readFile(existing,'utf8')).includes('已有工程保存验证'))
+  await desktop.close();desktop=await launch();await openEditor();await poll(currentDocument,doc=>doc&&!doc.projectPath&&doc.cues.length===0,'Deleted project remains cleared after restart')
+  assert.equal(await readFile(deleteAss,'utf8').then(()=>true).catch(()=>false),false);report.deleteProjectConfirmLoadingSourceProtectionAndNoRestartRevival=true
 
   for(const source of protectedSources)assert.equal(await digest(source.path),source.sha256,`Source file changed: ${source.path}`)
   report.sourceFilesUnchanged=true

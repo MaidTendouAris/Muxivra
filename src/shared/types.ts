@@ -106,6 +106,7 @@ export interface MuxivraApi {
   openSubtitleMedia(path: string): Promise<SubtitleDocument | undefined>
   saveSubtitleProject(document: SubtitleDocument): Promise<SubtitleDocument>
   saveSubtitleProjectAs(document: SubtitleDocument): Promise<SubtitleDocument | undefined>
+  deleteSubtitleProject(documentId: string): Promise<SubtitleDocument>
   getSubtitleProjectState(): Promise<import('./subtitle-project').SubtitleProjectState>
   subtitleExportLosses(document: SubtitleDocument, format: import('./subtitles').SubtitleExportFormat): Promise<string[]>
   saveSession(document: SubtitleDocument): Promise<void>

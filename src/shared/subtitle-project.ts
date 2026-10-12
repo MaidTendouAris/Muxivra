@@ -7,5 +7,7 @@ export interface SubtitleProjectState {
   dirty: boolean
   saving: boolean
   recoveryPending?: boolean
+  canDeleteProject: boolean
+  deleteUnavailableReason?: string
   error?: string
 }

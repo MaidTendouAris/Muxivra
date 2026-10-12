@@ -20,10 +20,11 @@ import { exportSubtitleText, subtitleExportLosses } from './subtitles/ass'
 import { SubtitleProjectStore } from './subtitles/project'
 import type { SubtitleExportFormat } from '../shared/subtitles'
 import { makeWaveform } from './media/waveform'
+import { migrateLegacyShortcuts } from '../shared/shortcuts'
 import { McpRequestStore } from './mcp/requests'
 import type { DirectoryAccessRequest, TranscodeApprovalRequest, McpRequest } from '../shared/mcp-requests'
 
-interface Configuration { settings: Settings; engine?: Engine; engines: Engine[]; presets: Preset[]; defaultOutputRoot?:string }
+interface Configuration { settings: Settings; engine?: Engine; engines: Engine[]; presets: Preset[]; defaultOutputRoot?:string; shortcutsVersion?: number }
 export class MediaService extends EventEmitter {
   readonly paths = new PathPolicy()
   readonly queue: JobQueue
@@ -55,6 +56,8 @@ export class MediaService extends EventEmitter {
     const defaults: Configuration = { settings: { theme: 'dark', concurrency: 1, mcp: { enabled: false, port: 19480, token: randomBytes(32).toString('hex'), inputRoots: [], outputRoots: [], allowInspect: true, allowSubmit: true, allowCancel: true } }, engines: [], presets: [] }
     this.configuration = await this.configStore.read(defaults)
     this.configuration.settings = settingsSchema.parse(this.configuration.settings)
+    if ((this.configuration.shortcutsVersion ?? 0) < 2) this.configuration.settings.shortcuts = migrateLegacyShortcuts(this.configuration.settings.shortcuts)
+    this.configuration.shortcutsVersion = 2
     this.configuration.presets.forEach(preset => presetSchema.parse(preset))
     // Replace the app-managed output grant if an installation is relocated;
     // manually configured output grants remain intact.
@@ -271,6 +274,7 @@ export class MediaService extends EventEmitter {
   async getSession(): Promise<SubtitleDocument | undefined> { return this.subtitleProjects.get() }
   async saveSubtitleProject(document: SubtitleDocument): Promise<SubtitleDocument> { return (await this.subtitleProjects.save(document))! }
   async saveSubtitleProjectAs(document: SubtitleDocument, path: string): Promise<SubtitleDocument> { return this.subtitleProjects.saveAs(document, path) }
+  async deleteSubtitleProject(documentId: string): Promise<SubtitleDocument> { return this.subtitleProjects.deleteProject(documentId) }
   subtitleExportLosses(document: SubtitleDocument, format: SubtitleExportFormat): string[] { return subtitleExportLosses(subtitleSchema.parse(document), format) }
   async exportSubtitles(document: SubtitleDocument, output: string, format: SubtitleExportFormat = 'srt'): Promise<void> {
     const doc = subtitleSchema.parse(document)

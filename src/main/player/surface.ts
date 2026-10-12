@@ -24,20 +24,26 @@ export class NativePlayerSurface {
   update(rect:PlayerRect):void {
     if(!rect.visible||rect.width<2||rect.height<2){this.hide();return}
     const {scale}=rect
-    if(!position(this.handle,0,Math.round(rect.x*scale),Math.round(rect.y*scale),Math.round(rect.width*scale),Math.round(rect.height*scale),0x10|0x40))throw new Error('无法调整 mpv 播放区域')
+    // Move/resize while preserving visibility; a suppressed surface is shown
+    // only after its final clipping region has been installed.
+    if(!position(this.handle,0,Math.round(rect.x*scale),Math.round(rect.y*scale),Math.round(rect.width*scale),Math.round(rect.height*scale),0x10))throw new Error('无法调整 mpv 播放区域')
+    const reveal=()=>{show(this.handle,8)}
     const width=Math.round(rect.width*scale),height=Math.round(rect.height*scale)
     const originX=Math.round(rect.x*scale),originY=Math.round(rect.y*scale)
     const cuts=(rect.occlusions??[]).map(cut=>({left:Math.round((rect.x+cut.x)*scale)-originX,top:Math.round((rect.y+cut.y)*scale)-originY,right:Math.round((rect.x+cut.x+cut.width)*scale)-originX,bottom:Math.round((rect.y+cut.y+cut.height)*scale)-originY,radius:Math.round((cut.radius??0)*scale)})).filter(cut=>cut.right>0&&cut.left<width&&cut.bottom>0&&cut.top<height&&cut.right>cut.left&&cut.bottom>cut.top)
-    const key=JSON.stringify([width,height,cuts]);if(key===this.regionKey)return
+    const key=JSON.stringify([width,height,cuts]);if(key===this.regionKey){reveal();return}
     // Keep the native video visible; clip only actual DOM overlays. Windows
     // owns the final region after SetWindowRgn succeeds.
-    if(!cuts.length){if(!setRegion(this.handle,0,true))throw new Error('无法恢复 mpv 播放区域');this.regionKey=key;return}
+    // Install clipping before SWP_SHOWWINDOW. Showing a hidden child first can
+    // expose its full, stale region while Windows/mpv handles the resize.
+    if(!cuts.length){if(!setRegion(this.handle,0,true))throw new Error('无法恢复 mpv 播放区域');this.regionKey=key;reveal();return}
     const region=createRegion(0,0,width,height);if(!region)throw new Error('无法创建播放窗口区域')
     let transferred=false
     try {
       for(const cut of cuts){const exclusion=cut.radius?createRoundRegion(cut.left,cut.top,cut.right+1,cut.bottom+1,cut.radius*2,cut.radius*2):createRegion(cut.left,cut.top,cut.right,cut.bottom);if(!exclusion)throw new Error('无法创建遮挡区域');try {if(!combineRegion(region,region,exclusion,4))throw new Error('无法裁剪播放窗口区域')}finally{deleteObject(exclusion)}}
       if(!setRegion(this.handle,region,true))throw new Error('无法应用播放窗口区域')
       transferred=true;this.regionKey=key
+      reveal()
     }finally{if(!transferred)deleteObject(region)}
   }
   hide():void {show(this.handle,0)}

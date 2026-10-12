@@ -157,6 +157,7 @@ function registerIpc(): void {
   handle('getSubtitleProjectState',()=>service.subtitleProjects.state())
   handle('saveSubtitleProject',async doc => { if(!subtitleSchema.parse(doc).projectPath) { const result=await saveSubtitleAs(doc); if(!result)throw new Error('尚未保存 ASS 工程'); return result }; return service.saveSubtitleProject(doc) })
   handle('saveSubtitleProjectAs',saveSubtitleAs)
+  handle('deleteSubtitleProject',id=>service.deleteSubtitleProject(z.string().uuid().parse(id)))
   handle('subtitleExportLosses',(doc,format)=>service.subtitleExportLosses(doc,z.enum(['ass','ssa','srt']).parse(format)))
   handle('readClipboardText',()=>clipboard.readText())
   handle('exportSubtitles',async (doc,format) => {

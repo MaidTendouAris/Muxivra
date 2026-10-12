@@ -11,8 +11,8 @@ export const shortcutDefinitions = [
   { id:'player.screenshot', label:'保存截图', scope:'player', defaultKey:'KeyS', nativeAction:'screenshot' },
   { id:'player.framePrevious', label:'上一帧', scope:'player', defaultKey:'Comma', nativeAction:'frame-previous' },
   { id:'player.frameNext', label:'下一帧', scope:'player', defaultKey:'Period', nativeAction:'frame-next' },
-  { id:'subtitles.setStart', label:'将播放位置设为字幕起点', scope:'subtitles', defaultKey:'BracketLeft', nativeAction:'set-start' },
-  { id:'subtitles.setEnd', label:'将播放位置设为字幕终点', scope:'subtitles', defaultKey:'BracketRight', nativeAction:'set-end' },
+  { id:'subtitles.setStart', label:'将播放位置设为字幕起点', scope:'subtitles', defaultKey:'KeyQ', nativeAction:'set-start' },
+  { id:'subtitles.setEnd', label:'将播放位置设为字幕终点', scope:'subtitles', defaultKey:'KeyE', nativeAction:'set-end' },
   { id:'subtitles.undo', label:'撤销字幕修改', scope:'subtitles', defaultKey:'Ctrl+KeyZ', nativeAction:'undo' },
   { id:'subtitles.redo', label:'重做字幕修改', scope:'subtitles', defaultKey:'Ctrl+Shift+KeyZ', nativeAction:'redo' }
 ] as const
@@ -37,6 +37,14 @@ function parseShortcut(binding:string):{code:string;mods:string[]}|undefined {
 
 export function resolveShortcuts(bindings?:Partial<ShortcutBindings>):ShortcutBindings {
   return Object.fromEntries(shortcutDefinitions.map(item=>[item.id,bindings?.[item.id]??item.defaultKey])) as ShortcutBindings
+}
+
+/** Apply new defaults once, without replacing custom bindings or introducing conflicts. */
+export function migrateLegacyShortcuts(bindings?:Partial<ShortcutBindings>):ShortcutBindings {
+  const resolved=resolveShortcuts(bindings)
+  if(resolved['subtitles.setStart']!=='BracketLeft'||resolved['subtitles.setEnd']!=='BracketRight')return resolved
+  const next={...resolved,'subtitles.setStart':'KeyQ','subtitles.setEnd':'KeyE'}
+  return validateShortcuts(next).length?resolved:next
 }
 
 export function validateShortcuts(bindings:ShortcutBindings):{id:ShortcutId;message:string}[] {
@@ -99,5 +107,10 @@ export function mpvShortcutBindings(bindings:ShortcutBindings,owner:'single'|'su
 export function isShortcutInput(target:EventTarget|null):boolean {
   if(!target||typeof (target as HTMLElement).closest!=='function')return false
   const element=target as HTMLElement
-  return element.isContentEditable||!!element.closest('input,textarea,select,button,[contenteditable="true"],[role="textbox"],[role="dialog"],[role="listbox"]')
+  if(element.isContentEditable)return true
+  const editor=element.closest('input,textarea,[role="textbox"]')
+  if(!editor)return false
+  if(editor.tagName!=='INPUT')return true
+  // Buttons and non-text controls retain the active page's shortcuts when focused.
+  return !['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes((editor as HTMLInputElement).type)
 }
