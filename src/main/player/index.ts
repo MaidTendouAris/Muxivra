@@ -11,7 +11,7 @@ import { inputFormatWhitelist } from '../../shared/media-policy'
 import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerRect, type PlayerAction, type PlayerEvent, type PlayerTrack } from '../../shared/player'
 import type { MediaService } from '../../core/service'
 import type { MediaInfo, SubtitleDocument } from '../../shared/types'
-import { serializeSrt } from '../../core/subtitles/srt'
+import { serializeAss } from '../../core/subtitles/ass'
 import { defaultShortcuts, mpvShortcutBindings, shortcutBindingsSchema, type ShortcutBindings } from '../../shared/shortcuts'
 
 const properties=['pause','time-pos','duration','volume','mute','speed','track-list','playlist','playlist-pos','path','media-title','video-params','video-out-params','aid','sid','audio-delay','sub-delay','loop-file','loop-playlist','ab-loop-a','ab-loop-b','eof-reached']
@@ -219,7 +219,7 @@ export class MpvPlayers extends EventEmitter {
       const cues=document.cues.filter(cue=>cue.text.trim()&&cue.endMs>cue.startMs)
       if(!cues.length){if(session.editorTrack)await session.command(['sub-remove',session.editorTrack]);session.editorTrack=undefined;return}
       const directory=join(this.service.dataPath,'player-subtitles');await mkdir(directory,{recursive:true})
-      const path=join(directory,`${owner}.srt`);await writeFile(path,serializeSrt(cues))
+      const path=join(directory,`${owner}.ass`);await writeFile(path,serializeAss({...document,cues}))
       if(session.editorTrack)await session.command(['sub-reload',session.editorTrack])
       else {await session.command(['sub-add',path,'select','编辑字幕']);const tracks:PlayerTrack[]=await session.command(['get_property','track-list']);session.editorTrack=tracks.find(track=>track['external-filename']===path)?.id}
     })

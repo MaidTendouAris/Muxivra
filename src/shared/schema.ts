@@ -28,8 +28,28 @@ export const optionsSchema = z.object({
 }).strict()
 export const pathSchema = z.string().min(1).max(32760).refine(v => !/[\x00-\x1f]/.test(v), '路径包含控制字符')
 export const requestSchema = z.object({ inputPath: pathSchema, outputPath: pathSchema, options: optionsSchema }).strict()
-export const cueSchema = z.object({ id: z.string().min(1).max(128), startMs: z.number().int().min(0).max(359999999), endMs: z.number().int().min(0).max(359999999), text: z.string().max(10000) }).strict()
-export const subtitleSchema = z.object({ id: z.string().min(1).max(128), sourcePath: pathSchema.optional(), cues: z.array(cueSchema).max(100000) }).strict()
+const subtitleLine = z.string().max(10000).refine(value=>!/[\x00-\x1f]/.test(value),'字幕字段含控制字符')
+const subtitleCsvValue = subtitleLine.refine(value=>!value.includes(','),'字幕字段含逗号')
+const subtitleExtra = z.record(z.string().min(1).max(80).regex(/^[a-zA-Z][a-zA-Z0-9 _-]*$/),subtitleCsvValue).refine(value=>Object.keys(value).length<=64)
+export const cueSchema = z.object({
+  id:z.string().min(1).max(128),startMs:z.number().int().min(0).max(359999999),endMs:z.number().int().min(0).max(359999999),text:z.string().max(10000).refine(value=>!value.includes('\0')),
+  layer:z.number().int().min(0).max(2147483647).optional(),style:subtitleCsvValue.max(200).optional(),name:subtitleCsvValue.max(200).optional(),
+  marginL:z.number().int().min(0).max(999999).optional(),marginR:z.number().int().min(0).max(999999).optional(),marginV:z.number().int().min(0).max(999999).optional(),
+  effect:subtitleCsvValue.max(2000).optional(),comment:z.boolean().optional(),extra:subtitleExtra.optional()
+}).strict()
+export const subtitleStyleSchema = z.object({
+  name:subtitleCsvValue.min(1).max(200),fontName:subtitleCsvValue.min(1).max(200),fontSize:z.number().positive().max(10000),
+  primaryColour:z.string().regex(/^&H[a-fA-F0-9]{1,8}&?$/),secondaryColour:z.string().regex(/^&H[a-fA-F0-9]{1,8}&?$/),outlineColour:z.string().regex(/^&H[a-fA-F0-9]{1,8}&?$/),backColour:z.string().regex(/^&H[a-fA-F0-9]{1,8}&?$/),
+  bold:z.boolean(),italic:z.boolean(),underline:z.boolean(),strikeOut:z.boolean(),scaleX:z.number().positive().max(10000),scaleY:z.number().positive().max(10000),spacing:z.number().min(-10000).max(10000),angle:z.number().min(-36000).max(36000),
+  borderStyle:z.union([z.literal(1),z.literal(3)]),outline:z.number().min(0).max(10000),shadow:z.number().min(0).max(10000),alignment:z.number().int().min(1).max(9),marginL:z.number().int().min(0).max(999999),marginR:z.number().int().min(0).max(999999),marginV:z.number().int().min(0).max(999999),encoding:z.number().int().min(0).max(255),extra:subtitleExtra.optional()
+}).strict()
+const subtitleFields=z.array(z.string().regex(/^[a-zA-Z][a-zA-Z0-9 _-]{0,79}$/)).max(64)
+export const subtitleSchema = z.object({
+  id:z.string().min(1).max(128),sourcePath:pathSchema.optional(),cues:z.array(cueSchema).max(100000),version:z.literal(2).optional(),format:z.literal('ass').optional(),mediaPath:pathSchema.optional(),projectPath:pathSchema.optional(),exportFormat:z.enum(['ass','ssa','srt']).optional(),
+  scriptInfo:z.record(subtitleLine.min(1).max(100).refine(value=>!value.includes(':')),subtitleLine).refine(value=>Object.keys(value).length<=1000).optional(),styles:z.array(subtitleStyleSchema).max(1000).optional(),eventFormat:subtitleFields.optional(),styleFormat:subtitleFields.optional(),
+  sections:z.array(z.object({name:subtitleLine.min(1).max(200).refine(value=>!/[\[\]]/.test(value)),lines:z.array(subtitleLine).max(100000)}).strict()).max(100).optional(),
+  sectionLines:z.partialRecord(z.enum(['Script Info','V4+ Styles','Events']),z.array(subtitleLine).max(100000)).optional()
+}).strict()
 export const presetSchema = z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/), name: z.string().min(1).max(80), description: z.string().max(500), options: optionsSchema }).strict()
 export const presetFileSchema = z.object({format:z.literal('muxivra-presets'),version:z.literal(1),presets:z.array(presetSchema).min(1).max(200)}).strict()
 export const settingsSchema = z.object({

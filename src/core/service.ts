@@ -8,7 +8,7 @@ import { settingsSchema, requestSchema, presetSchema, subtitleSchema, presetFile
 import { validateComponentOptions, componentCapabilities } from './engine/options'
 import type { ComponentCapabilities } from '../shared/parameters'
 import { JsonStore } from './storage/json'
-import { PathPolicy, availableOutput, localPath, canonicalInput } from './media/paths'
+import { PathPolicy, availableOutput, localPath } from './media/paths'
 import { buildPlan } from './media/plan'
 import { inspectMedia } from './media/probe'
 import { detectEngine, verifyEngine, installEngine, managedEngines } from './engine'
@@ -16,7 +16,9 @@ import { JobQueue } from './jobs/queue'
 import { HardwareStore } from './hardware'
 import { UsageMonitor } from './hardware/usage'
 import { builtInPresets } from './presets'
-import { parseSrt, serializeSrt } from './subtitles/srt'
+import { exportSubtitleText, subtitleExportLosses } from './subtitles/ass'
+import { SubtitleProjectStore } from './subtitles/project'
+import type { SubtitleExportFormat } from '../shared/subtitles'
 import { makeWaveform } from './media/waveform'
 import { McpRequestStore } from './mcp/requests'
 import type { DirectoryAccessRequest, TranscodeApprovalRequest, McpRequest } from '../shared/mcp-requests'
@@ -28,7 +30,7 @@ export class MediaService extends EventEmitter {
   readonly hardware: HardwareStore
   readonly usage:UsageMonitor
   private configStore: JsonStore<Configuration>
-  private sessionStore: JsonStore<SubtitleDocument | undefined>
+  readonly subtitleProjects: SubtitleProjectStore
   private requestStore: McpRequestStore
   private configuration!: Configuration
   private configOperations: Promise<unknown> = Promise.resolve()
@@ -42,7 +44,8 @@ export class MediaService extends EventEmitter {
   mcpState: Snapshot['mcp'] = { running: false }
   beforeSaveSettings?: (settings: Settings) => Promise<void>
   constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string) {
-    super(); this.queue = new JobQueue(dataPath); this.hardware=new HardwareStore(dataPath,()=>this.emit('update')); this.configStore = new JsonStore(join(dataPath,'config.json')); this.sessionStore = new JsonStore(join(dataPath,'subtitle-session.json'))
+    super(); this.queue = new JobQueue(dataPath); this.hardware=new HardwareStore(dataPath,()=>this.emit('update')); this.configStore = new JsonStore(join(dataPath,'config.json'))
+    this.subtitleProjects = new SubtitleProjectStore(dataPath, this.paths, () => this.emit('update'))
     this.requestStore = new McpRequestStore(join(dataPath,'mcp-requests.json'), () => this.emit('update'))
     this.usage=new UsageMonitor(()=>this.hardware.info,hardwareWorkerPath)
     this.queue.on('update',() => this.emit('update'))
@@ -87,6 +90,7 @@ export class MediaService extends EventEmitter {
       return jobs.length === request.payload.requests.length && jobs.every(job => job.requestFingerprint === fingerprint && job.requestJobCount === request.payload.requests.length && !job.requestExpired) ? { jobIds: jobs.map(job => job.id) } : undefined
     })
     await this.hardware.initialize()
+    await this.subtitleProjects.initialize()
     this.queue.concurrency = this.configuration.settings.concurrency
     this.queue.start()
   }
@@ -97,7 +101,7 @@ export class MediaService extends EventEmitter {
   }
   get settings(): Settings { return structuredClone(this.configuration.settings) }
   get engine(): Engine { if (!this.configuration.engine) throw new Error('未配置 FFmpeg，请前往设置选择或下载引擎'); return structuredClone(this.configuration.engine) }
-  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, mcpRequests: this.requestStore.counts(), notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
+  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, mcpRequests: this.requestStore.counts(), subtitleProject: this.subtitleProjects.state(), notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
   private roots(source: Source, output = false): string[] | undefined { return source === 'mcp' ? (output ? this.settings.mcp.outputRoots : this.settings.mcp.inputRoots) : undefined }
   private permission(source: Source, action: 'allowInspect' | 'allowSubmit' | 'allowCancel'): void { if (source === 'mcp' && (!this.settings.mcp.enabled || !this.settings.mcp[action])) throw new Error('此 MCP 操作未获授权，请检查设置') }
   async inspect(input: string, source: Source = 'gui') { this.permission(source,'allowInspect'); return inspectMedia(this.engine,await this.paths.input(input,this.roots(source))) }
@@ -261,17 +265,21 @@ export class MediaService extends EventEmitter {
     const data=presetFileSchema.parse({format:'muxivra-presets',version:1,presets})
     await writeFile(await this.paths.output(output),JSON.stringify(data,null,2)+'\n',{flag:'wx'})
   }
-  async readSubtitles(input: string): Promise<SubtitleDocument> {
-    const path = await this.paths.input(input)
-    if ((await stat(path)).size > 10*1024*1024) throw new Error('字幕文件超过 10 MB')
-    const buffer = await readFile(path)
-    const text = buffer[0] === 0xff && buffer[1] === 0xfe ? buffer.subarray(2).toString('utf16le') : new TextDecoder('utf-8',{ fatal: true }).decode(buffer)
-    return { id: randomUUID(), sourcePath: path, cues: parseSrt(text) }
+  async openSubtitleMedia(input: string, projectPath?: string): Promise<SubtitleDocument> { return this.subtitleProjects.openMedia(input, projectPath) }
+  async readSubtitles(input: string, projectPath?: string): Promise<SubtitleDocument> { return this.subtitleProjects.import(input, projectPath) }
+  async saveSession(document: SubtitleDocument): Promise<void> { await this.subtitleProjects.cache(document) }
+  async getSession(): Promise<SubtitleDocument | undefined> { return this.subtitleProjects.get() }
+  async saveSubtitleProject(document: SubtitleDocument): Promise<SubtitleDocument> { return (await this.subtitleProjects.save(document))! }
+  async saveSubtitleProjectAs(document: SubtitleDocument, path: string): Promise<SubtitleDocument> { return this.subtitleProjects.saveAs(document, path) }
+  subtitleExportLosses(document: SubtitleDocument, format: SubtitleExportFormat): string[] { return subtitleExportLosses(subtitleSchema.parse(document), format) }
+  async exportSubtitles(document: SubtitleDocument, output: string, format: SubtitleExportFormat = 'srt'): Promise<void> {
+    const doc = subtitleSchema.parse(document)
+    const target = await this.paths.output(output)
+    if (doc.sourcePath && localPath(doc.sourcePath).toLowerCase() === target.toLowerCase()) throw new Error('请导出到新文件，避免覆盖原字幕')
+    if (doc.projectPath?.toLowerCase() === target.toLowerCase()) throw new Error('导出不能覆盖 ASS 工程，请使用保存工程')
+    await writeFile(target, exportSubtitleText(doc, format), { flag: 'wx' })
   }
-  async saveSession(document: SubtitleDocument): Promise<void> { await this.sessionStore.write(subtitleSchema.parse(document)) }
-  async getSession(): Promise<SubtitleDocument | undefined> { const doc = await this.sessionStore.read(undefined); return doc ? subtitleSchema.parse(doc) : undefined }
-  async exportSubtitles(document: SubtitleDocument, output: string): Promise<void> { const doc = subtitleSchema.parse(document); if (doc.sourcePath && (await canonicalInput(doc.sourcePath)).toLowerCase() === output.toLowerCase()) throw new Error('请导出到新文件，避免覆盖原字幕'); await writeFile(await this.paths.output(output),serializeSrt(doc.cues),{ flag: 'wx' }) }
   private track<T>(task: Promise<T>): Promise<T> { this.backgroundTasks.add(task); void task.finally(() => this.backgroundTasks.delete(task)).catch(() => {}); return task }
   async waveform(input: string): Promise<number[]> { const media = await this.inspect(input); return this.track(makeWaveform(this.engine,media,this.background.signal)) }
-  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush(); await this.sessionStore.flush() }
+  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.subtitleProjects.shutdown(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush() }
 }

@@ -34,6 +34,7 @@ npm run smoke:ui
 npm run smoke:mcp-setup
 npm run smoke:tasks
 npm run smoke:interaction
+npm run smoke:subtitles
 ```
 
 集成及桌面测试需要可调用的外部 FFmpeg，用于生成临时媒体。报告与截图保存到 `artifacts/qa/`，配置和数据在 `.test-data/` 中隔离。实际验收结果、安装版验证和下载测试开关见 [验收记录](VERIFICATION.md)。
@@ -52,9 +53,11 @@ npm run smoke:interaction
 
 0.10.0 新增的 `npm run smoke:interaction` 通过实际 MCP 客户端发起目录和转码申请，在应用内批准或拒绝；验证批准前无访问权限、拒绝不授权、审批加载反馈和重试去重。在持续提交权限关闭时批准一次 AAC M4A 转码，并用 ffprobe 核对输出。另验证快捷键二级页面的录入、冲突、未保存标记和离页应用，以及自定义按键在 React 与原生 mpv 视频区域生效、旧键失效、申请与快捷键重启保留。测试使用隔离配置和临时媒体，并检查明暗主题及最小窗口布局。
 
-`scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入、任务历史、MCP 交互与快捷键七组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
+`npm run smoke:subtitles` 在隔离配置中验证 ASS 工程创建、已有文件载入、60 秒真实自动保存、原文备份、外部修改拒绝、另存、重启恢复、ASS/SSA/SRT 转换、基础样式与批量编辑。使用 10000 条合成字幕检查 50 条分页和末页定位；这不代表完整 Aegisub 性能或格式兼容验证。
 
-安装脚本默认执行全部七组；相关改动复验可用 `-Suites tasks` 或 `-Suites interaction` 等已定义名称选择检查，仍在独立临时安装中验证并卸载。
+`scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入、任务历史、MCP 交互与快捷键、ASS 工程与字幕编辑八组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
+
+安装脚本默认执行全部八组；相关改动复验可用 `-Suites tasks`、`-Suites interaction` 或 `-Suites subtitles` 等已定义名称选择检查，仍在独立临时安装中验证并卸载。
 
 内置指南位于 `resources/mcp-skills/<id>/SKILL.md`，由 `src/mcp/skills.ts` 导入并随安装包保留。调整请求字段、任务状态或引擎支持范围时，同步更新对应指南；参数参考直接来自共享定义。新增指南需要更新固定目录、连接入口和读取测试，不能将任意本机文件路径作为指南 ID。
 

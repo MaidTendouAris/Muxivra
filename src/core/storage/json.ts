@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { atomicRename } from './atomic'
 
 export class JsonStore<T> {
   private writes: Promise<void> = Promise.resolve()
@@ -14,8 +15,8 @@ export class JsonStore<T> {
     const operation = this.writes.catch(() => {}).then(async () => {
       await mkdir(dirname(this.path), { recursive: true })
       const temporary = `${this.path}.${randomUUID()}.tmp`
-      await writeFile(temporary, json, { mode: 0o600 })
-      await rename(temporary, this.path)
+      try { await writeFile(temporary, json, { mode: 0o600 }); await atomicRename(temporary, this.path) }
+      finally { await unlink(temporary).catch(()=>{}) }
     })
     this.writes = operation
     return operation

@@ -46,8 +46,8 @@ export interface Job {
   executedArgs?:string[]
 }
 export interface JobLogPage { text:string; offset:number; nextOffset:number; totalBytes:number; hasMore:boolean }
-export interface Cue { id: string; startMs: number; endMs: number; text: string }
-export interface SubtitleDocument { id: string; sourcePath?: string; cues: Cue[] }
+export type { Cue, SubtitleDocument } from './subtitles'
+import type { Cue, SubtitleDocument } from './subtitles'
 export interface McpSettings {
   enabled: boolean; port: number; token: string; inputRoots: string[]; outputRoots: string[]
   allowInspect: boolean; allowSubmit: boolean; allowCancel: boolean
@@ -59,6 +59,7 @@ export interface Snapshot {
   mcp: { running: boolean; url?: string; error?: string }; notice?: string; dataPath: string; enginePath: string; defaultOutputPath?: string; defaultMcpOutputPath?: string
   hardware: import('./hardware').HardwareInfo; hardwareRefreshing: boolean
   mcpRequests: { pending:number; total:number; revision:number }
+  subtitleProject: import('./subtitle-project').SubtitleProjectState
 }
 export interface ExitPrompt {
   phase: 'confirm' | 'closing'; running: number; waiting: number; paused: number; mcpRunning: boolean; error?: string
@@ -101,10 +102,15 @@ export interface MuxivraApi {
   importPresets(): Promise<{count:number;names:string[]} | undefined>
   exportPresets(ids:string[]): Promise<string | undefined>
   componentCapabilities(kind:ComponentCapabilities['kind'],name:string):Promise<ComponentCapabilities>
-  readSubtitles(path: string): Promise<SubtitleDocument>
+  readSubtitles(path: string): Promise<SubtitleDocument | undefined>
+  openSubtitleMedia(path: string): Promise<SubtitleDocument | undefined>
+  saveSubtitleProject(document: SubtitleDocument): Promise<SubtitleDocument>
+  saveSubtitleProjectAs(document: SubtitleDocument): Promise<SubtitleDocument | undefined>
+  getSubtitleProjectState(): Promise<import('./subtitle-project').SubtitleProjectState>
+  subtitleExportLosses(document: SubtitleDocument, format: import('./subtitles').SubtitleExportFormat): Promise<string[]>
   saveSession(document: SubtitleDocument): Promise<void>
   getSession(): Promise<SubtitleDocument | undefined>
-  exportSubtitles(document: SubtitleDocument): Promise<string | undefined>
+  exportSubtitles(document: SubtitleDocument, format?: import('./subtitles').SubtitleExportFormat): Promise<string | undefined>
   inspectPlayback(path:string):Promise<MediaInfo>
   playerState(owner:PlayerOwner):Promise<PlayerState>
   playerOpen(owner:PlayerOwner,paths:string[],append?:boolean):Promise<void>
@@ -121,6 +127,7 @@ export interface MuxivraApi {
   reveal(path: string): Promise<void>
   readLog(id: string): Promise<string>
   copyText(text: string): Promise<void>
+  readClipboardText(): Promise<string>
   mcpSetupInfo(): Promise<McpSetupInfo>
   mcpReadSkill(id:string): Promise<McpSkillDocument>
   copyMcpConnectionPrompt(): Promise<void>

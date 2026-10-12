@@ -1,4 +1,4 @@
-﻿param([string]$Installer = '', [ValidateSet('desktop','player','parameters','ui','mcp-setup','tasks','interaction')][string[]]$Suites = @('desktop','player','parameters','ui','mcp-setup','tasks','interaction'))
+﻿param([string]$Installer = '', [ValidateSet('desktop','player','parameters','ui','mcp-setup','tasks','interaction','subtitles')][string[]]$Suites = @('desktop','player','parameters','ui','mcp-setup','tasks','interaction','subtitles'))
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if (-not $Installer) {
@@ -38,7 +38,8 @@ try {
     @{ Name='ui'; Script='ui-smoke'; Report='installed-ui-smoke'; Description='界面与退出流程' },
     @{ Name='mcp-setup'; Script='mcp-setup-smoke'; Report='installed-mcp-setup-smoke'; Description='MCP 接入与内置指南' },
     @{ Name='tasks'; Script='task-history-smoke'; Report='installed-task-history-smoke'; Description='任务历史、分页与删除' },
-    @{ Name='interaction'; Script='mcp-interaction-smoke'; Report='installed-mcp-interaction-smoke'; Description='MCP 申请与快捷键编辑' }
+    @{ Name='interaction'; Script='mcp-interaction-smoke'; Report='installed-mcp-interaction-smoke'; Description='MCP 申请与快捷键编辑' },
+    @{ Name='subtitles'; Script='subtitle-project-smoke'; Report='installed-subtitle-project-smoke'; Description='ASS 工程、字幕编辑与恢复' }
   )
   foreach ($check in $checks) {
     if ($check.Name -notin $Suites) { continue }

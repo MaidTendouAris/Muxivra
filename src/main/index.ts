@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Tray, Menu, nativeImage, clipboard, session } from 'electron'
-import { join, dirname, resolve } from 'node:path'
+import { join, dirname, resolve, basename, extname } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { MediaService } from '../core/service'
@@ -16,6 +16,8 @@ import { skillCatalog, readSkill, skillIds } from '../mcp/skills'
 import { buildMcpConnectionPrompt } from '../shared/mcp-connection'
 import { APP_VERSION } from '../shared/version'
 import { defaultShortcuts } from '../shared/shortcuts'
+import { SubtitleProjectLocationError } from '../core/subtitles/project'
+import type { SubtitleDocument } from '../shared/types'
 
 app.setName('Muxivra')
 protocol.registerSchemesAsPrivileged([{ scheme: 'muxivra', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
@@ -107,7 +109,7 @@ function registerIpc(): void {
   })
   handle('selectFiles',async (kind,multiple) => {
     z.enum(['media','subtitle','subtitle-burn']).parse(kind); z.boolean().optional().parse(multiple)
-    const selected = await dialog.showOpenDialog(window!,{ properties: multiple ? ['openFile','multiSelections'] : ['openFile'], filters: kind === 'subtitle' ? [{ name: 'SRT 字幕', extensions: ['srt'] }] : kind==='subtitle-burn'?[{name:'烧录字幕',extensions:['srt','ass','ssa']}]:[{ name: '媒体文件', extensions: ['mp4','mkv','mov','avi','webm','m4v','m4a','mp3','wav','flac','ogg','aac','ts','png','jpg','webp','gif'] },{ name: '所有文件', extensions: ['*'] }] })
+    const selected = await dialog.showOpenDialog(window!,{ properties: multiple ? ['openFile','multiSelections'] : ['openFile'], filters: kind === 'subtitle' ? [{ name: '字幕', extensions: ['srt','ass','ssa'] }] : kind==='subtitle-burn'?[{name:'烧录字幕',extensions:['srt','ass','ssa']}]:[{ name: '媒体文件', extensions: ['mp4','mkv','mov','avi','webm','m4v','m4a','mp3','wav','flac','ogg','aac','ts','png','jpg','webp','gif'] },{ name: '所有文件', extensions: ['*'] }] })
     return Promise.all(selected.filePaths.map(path => service.paths.grantFile(path)))
   })
   handle('selectDirectory',async purpose => {
@@ -134,11 +136,37 @@ function registerIpc(): void {
   handle('componentCapabilities',(kind,name)=>service.componentCapabilities(z.enum(['videoEncoder','audioEncoder','filter']).parse(kind),z.string().regex(/^[a-zA-Z0-9_]{1,80}$/).parse(name)))
   handle('importPresets',async()=>{const selected=await dialog.showOpenDialog(window!,{title:'导入预设',properties:['openFile'],filters:[{name:'Muxivra 预设',extensions:['json']}]});if(!selected.filePaths[0])return;return service.importPresetFile(await service.paths.grantFile(selected.filePaths[0]))})
   handle('exportPresets',async ids=>{z.array(z.string()).min(1).max(200).parse(ids);const selected=await dialog.showSaveDialog(window!,{title:'导出预设',defaultPath:'muxivra-presets.json',filters:[{name:'Muxivra 预设',extensions:['json']}]});if(!selected.filePath)return;await service.paths.grantDirectory(dirname(selected.filePath));await service.exportPresetFile(ids,selected.filePath);return selected.filePath})
-  handle('readSubtitles',path => service.readSubtitles(path)); handle('saveSession',doc => service.saveSession(doc)); handle('getSession',() => service.getSession())
-  handle('exportSubtitles',async doc => {
-    const selected = await dialog.showSaveDialog(window!,{ title: '导出新的 SRT 文件', defaultPath: 'subtitles-edited.srt', filters: [{ name: 'SRT 字幕', extensions: ['srt'] }] })
+  const openSubtitleProject = async (path: string, media: boolean) => {
+    pathSchema.parse(path)
+    const load = (target?: string) => media ? service.openSubtitleMedia(path, target) : service.readSubtitles(path, target)
+    try { return await load() } catch (error) {
+      if (!(error instanceof SubtitleProjectLocationError)) throw error
+      const selected = await dialog.showSaveDialog(window!, { title: '选择 ASS 工程保存位置', defaultPath: basename(error.suggestedPath), filters: [{ name: 'ASS 工程', extensions: ['ass'] }] })
+      if (!selected.filePath) return
+      await service.paths.grantDirectory(dirname(selected.filePath)); return load(selected.filePath)
+    }
+  }
+  const saveSubtitleAs = async (document: SubtitleDocument) => {
+    const doc = subtitleSchema.parse(document)
+    const selected = await dialog.showSaveDialog(window!, { title: 'ASS 工程另存为', defaultPath: doc.projectPath ? doc.projectPath.replace(/\.ass$/i, '-copy.ass') : 'subtitles.ass', filters: [{ name: 'ASS 工程', extensions: ['ass'] }] })
+    if (!selected.filePath) return
+    await service.paths.grantDirectory(dirname(selected.filePath)); return service.saveSubtitleProjectAs(doc, selected.filePath)
+  }
+  handle('readSubtitles',path => openSubtitleProject(path,false)); handle('openSubtitleMedia',path=>openSubtitleProject(path,true))
+  handle('saveSession',doc => service.saveSession(doc)); handle('getSession',() => service.getSession())
+  handle('getSubtitleProjectState',()=>service.subtitleProjects.state())
+  handle('saveSubtitleProject',async doc => { if(!subtitleSchema.parse(doc).projectPath) { const result=await saveSubtitleAs(doc); if(!result)throw new Error('尚未保存 ASS 工程'); return result }; return service.saveSubtitleProject(doc) })
+  handle('saveSubtitleProjectAs',saveSubtitleAs)
+  handle('subtitleExportLosses',(doc,format)=>service.subtitleExportLosses(doc,z.enum(['ass','ssa','srt']).parse(format)))
+  handle('readClipboardText',()=>clipboard.readText())
+  handle('exportSubtitles',async (doc,format) => {
+    format=z.enum(['ass','ssa','srt']).default('ass').parse(format)
+    doc=subtitleSchema.parse(doc)
+    const base=doc.projectPath?doc.projectPath.replace(/\.ass$/i, ''):'subtitles'
+    const selected = await dialog.showSaveDialog(window!,{ title: `导出 ${format.toUpperCase()} 字幕`, defaultPath: `${base}-export.${format}`, filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }] })
     if (!selected.filePath) return undefined
-    await service.paths.grantDirectory(dirname(selected.filePath)); await service.exportSubtitles(doc,selected.filePath); return selected.filePath
+    if(extname(selected.filePath).toLowerCase()!==`.${format}`)throw new Error('导出文件扩展名与所选格式不一致')
+    await service.paths.grantDirectory(dirname(selected.filePath)); await service.exportSubtitles(doc,selected.filePath,format); return selected.filePath
   })
   handle('inspectPlayback',path=>service.inspectPlayback(pathSchema.parse(path)))
   handle('playerState',owner=>players.state(playerOwnerSchema.parse(owner)))
