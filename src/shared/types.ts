@@ -52,12 +52,13 @@ export interface McpSettings {
   enabled: boolean; port: number; token: string; inputRoots: string[]; outputRoots: string[]
   allowInspect: boolean; allowSubmit: boolean; allowCancel: boolean
 }
-export interface Settings { theme: 'dark' | 'light' | 'system'; concurrency: number; mcp: McpSettings }
+export interface Settings { theme: 'dark' | 'light' | 'system'; concurrency: number; mcp: McpSettings; shortcuts?: import('./shortcuts').ShortcutBindings }
 export interface DownloadState { state: 'idle' | 'downloading' | 'verifying' | 'extracting' | 'completed' | 'failed'; percent: number; message: string }
 export interface Snapshot {
   engine?: Engine; engines: Engine[]; jobs: Job[]; presets: Preset[]; settings: Settings; download: DownloadState
   mcp: { running: boolean; url?: string; error?: string }; notice?: string; dataPath: string; enginePath: string; defaultOutputPath?: string; defaultMcpOutputPath?: string
   hardware: import('./hardware').HardwareInfo; hardwareRefreshing: boolean
+  mcpRequests: { pending:number; total:number; revision:number }
 }
 export interface ExitPrompt {
   phase: 'confirm' | 'closing'; running: number; waiting: number; paused: number; mcpRunning: boolean; error?: string
@@ -67,6 +68,9 @@ export interface McpSkillDocument extends McpSkillSummary { markdown:string; par
 export interface McpSetupInfo { executablePath?:string; version:string; running:boolean; skills:McpSkillSummary[] }
 export interface MuxivraApi {
   snapshot(): Promise<Snapshot>
+  mcpRequests(): Promise<import('./mcp-requests').McpRequest[]>
+  mcpRequest(id:string): Promise<import('./mcp-requests').McpRequest>
+  reviewMcpRequest(id:string,approve:boolean,note?:string): Promise<import('./mcp-requests').McpRequest>
   exitState(): Promise<ExitPrompt | undefined>
   requestExit(): Promise<void>
   respondToExit(confirm: boolean): Promise<void>

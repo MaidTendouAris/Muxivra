@@ -11,9 +11,9 @@ description: 用实际硬件、引擎、预设和处理计划完成媒体任务�
 2. 调用 get_system_hardware 与 get_engine_capabilities。硬件字段有 available/missing/error 状态；显存有来源。accelerationValidation 为 not-tested 时，编码器出现在列表中仍不能证明当前 GPU/驱动可用。
 3. 调用 list_presets，优先复制合适预设的完整 options，仅覆盖用户要求的参数。
 4. 用 list_media_files 列出授权目录一层内的文件；不会递归，最多 500 项。逐个 inspect_media，确认媒体类型、音轨、时长与输出需求。遇到无法分析、权限不足或用户目标不明确，向用户说明并询问。
-5. 构造 inputPath、outputPath、options。默认使用连接上下文提供的安装目录 outputs，用户指定其他输出时须在授权输出目录内。输出父目录必须已经存在，服务器不会代为创建任意子文件夹。输入目录始终由用户手动添加；输出授权不会自动变成输入授权。路径使用完整本机路径。保留原文件；conflict = reject 拒绝覆盖，number 产生不冲突的新名称。
+5. 构造 inputPath、outputPath、options。默认使用连接上下文提供的安装目录 outputs，用户指定其他输出时须在授权输出目录内。输出父目录必须已经存在，服务器不会代为创建任意子文件夹。输入目录由用户在设置手动添加，或通过 request_directory_access 申请后在 MCP 交互页人工批准；待审期间不可列文件或分析内容。输出授权不会自动变成输入授权。路径使用完整本机路径。保留原文件；conflict = reject 拒绝覆盖，number 产生不冲突的新名称。
 6. 对每个请求先调用 plan_transcode。核对 warnings、输出轨道、编码、剪辑时长与目标路径。用户只要求计划时停在计划；用户已经授权处理时执行。计划不会启动任务。
-7. 调用 submit_jobs，最多 500 项。为同一组请求保留稳定 requestKey；相同键及相同请求返回原任务，参数改变时必须使用新的键。批次预检可能耗时，等待响应，不因延迟重复入队。
+7. 已授权操作可调用 submit_jobs，最多 500 项。需要用户确认具体计划，或持续提交权限未开启时，用 request_transcode 提交同样的结构化任务及用途，等待用户在 MCP 交互页单次批准。必须先取得输入/输出目录授权。为同一组请求保留稳定 requestKey；相同键及相同请求返回原任务或申请，参数改变时必须使用新的键。批次预检可能耗时，等待响应，不因延迟重复入队。
 8. 保存返回的任务 ID，定期 get_job 或 list_jobs。只跟踪当前任务组，不要干预其他来源的任务。报告进度、实际耗时与存在时的预计剩余时间。
 9. completed 且 finishedAt 已记录后再确认处理结果。failed/cancelled/interrupted 需要如实说明；提交成功或 progress 接近 100 不代表完成。核对输出路径及 outputSize；有本机检查能力时进一步 inspect_media 或完整解码。
 
@@ -22,3 +22,11 @@ GUI 和 MCP 使用同一任务队列、并发上限和引擎。处理时固定�
 历史默认保留最近 1000 条已结束记录，未完成项不自动清除。用户可在 GUI 删除历史及日志，媒体文件保留。去重只覆盖仍保留的批次；部分历史已删除或到期时，旧 requestKey 会被拒绝。任务 ID 不存在不代表未执行过，先核对既有输出并向用户说明，再决定是否新建任务；不要自行删除用户历史。
 
 连接提示词只授权连接与读取指南，不授权把目录中的文件自动全部转码。根据用户后续的实际任务操作。
+
+## 人工申请
+
+request_directory_access 使用 path、permission（input/output）、reason、requestKey。指定完成用户任务所需的最小目录，说明用途；批准后目录及其子目录获得持续授权，用户可在设置撤回。输入输出是分开的权限。
+
+request_transcode 使用 requests、reason、requestKey。申请返回 pending，服务器没有创建任务；通过 get_request 查询，避免高频轮询。用户不响应时保持等待，不能以反复申请或修改配置来绕过审核。approved 且存在 jobIds 才表示对应任务已入队，随后查询 get_job。rejected 表示拒绝，不自动重试；failed 查看 error 和 jobIds，核对任务与输出后向用户说明。审批后仍会再次验证路径、引擎与参数。
+
+list_requests 可用于重连后找回申请。没有远程批准工具；AI 不能替代用户点击批准。单次任务批准不会永久开启提交权限。申请和媒体任务的状态不同，批准不代表转码完成。

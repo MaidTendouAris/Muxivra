@@ -24,7 +24,7 @@ export function McpSetup({snapshot,draft,dirty,run,busy,onResetCredentials}:{sna
       <Button disabled={busy||!draft.mcp.enabled||!info} loadingText="正在生成提示词…" onClick={copy}><Copy size={16}/>{dirty?'保存并复制完整连接提示词':'复制完整连接提示词'}</Button>
       <div className="mcp-copy-meta"><span>包含地址、凭据、目录、权限和内置指南入口</span>{info&&<Button variant="ghost" size="sm" onClick={()=>setPreview(true)}><Eye size={14}/>预览</Button>}</div>
       <p className="hint">提示词含连接凭据，仅发送给可信的 AI。客户端需要具备本机操作能力。</p>
-      {!draft.mcp.enabled&&<p className="hint">手动添加媒体目录并启用 MCP 后即可复制。</p>}
+      {!draft.mcp.enabled&&<p className="hint">启用 MCP 后即可复制。媒体目录也可由 AI 申请，再由你确认。</p>}
       {error&&<p className="error-inline">{error}</p>}
     </section>
     <section className="mcp-guides-card">

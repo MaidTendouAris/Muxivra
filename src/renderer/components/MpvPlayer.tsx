@@ -5,8 +5,11 @@ import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerAction
 import { Button, Input, Select, Busy } from './ui'
 import type { RunAction } from './Jobs'
 import { formatTime, parseTime, nameOf } from '../lib/utils'
+import { formatShortcut, isShortcutInput, matchShortcut, type ShortcutId } from '../../shared/shortcuts'
+import { useShortcuts } from './ShortcutProvider'
 
 export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}:{owner:PlayerOwner;path:string;active:boolean;run:RunAction;onState?:(state:PlayerState)=>void;onMediaChange?:(media:MediaInfo)=>void;loadId?:number}){
+  const shortcuts=useShortcuts()
   const [state,setState]=useState(()=>emptyPlayerState(owner)),[error,setError]=useState(''),[scrub,setScrub]=useState<number>(),[jump,setJump]=useState('00:00:00,000'),[volumeDraft,setVolumeDraft]=useState<number>()
   const volumeControl=useRef<{value?:number;pending?:number;sending:boolean;editing:boolean}>({sending:false,editing:false})
   const viewport=useRef<HTMLDivElement>(null),callbacks=useRef({onState,onMediaChange});callbacks.current={onState,onMediaChange}
@@ -65,17 +68,19 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
   useEffect(()=>{
     if(!active||!usable)return
     const listener=(event:KeyboardEvent)=>{
-      const target=event.target as HTMLElement
-      if(target.isContentEditable||['INPUT','TEXTAREA','SELECT','BUTTON'].includes(target.tagName)||event.ctrlKey||event.metaKey||event.altKey||document.querySelector('[role="dialog"], [role="listbox"]'))return
+      if(event.defaultPrevented||isShortcutInput(event.target)||document.querySelector('[role="dialog"], [role="listbox"]'))return
       const currentVolume=volumeControl.current.value??state.volume
-      const actions:Record<string,PlayerAction>={Space:{type:'toggle'},ArrowLeft:{type:'seek-relative',offsetMs:owner==='subtitles'?-100:-5000},ArrowRight:{type:'seek-relative',offsetMs:owner==='subtitles'?100:5000},ArrowUp:{type:'volume',value:Math.min(100,currentVolume+5)},ArrowDown:{type:'volume',value:Math.max(0,currentVolume-5)},KeyM:{type:'mute',value:!state.muted},KeyF:{type:'fullscreen'},Period:{type:'frame-next'},Comma:{type:'frame-previous'}}
+      const actions:Partial<Record<ShortcutId,PlayerAction>>={'player.toggle':{type:'toggle'},'player.seekBackward':{type:'seek-relative',offsetMs:owner==='subtitles'?-100:-5000},'player.seekForward':{type:'seek-relative',offsetMs:owner==='subtitles'?100:5000},'player.volumeUp':{type:'volume',value:Math.min(100,currentVolume+5)},'player.volumeDown':{type:'volume',value:Math.max(0,currentVolume-5)},'player.mute':{type:'mute',value:!state.muted},'player.fullscreen':{type:'fullscreen'},'player.frameNext':{type:'frame-next'},'player.framePrevious':{type:'frame-previous'}}
+      const shortcut=(Object.keys(actions) as ShortcutId[]).find(id=>matchShortcut(event,id,shortcuts))
       if(event.code==='Escape'&&state.fullscreen){event.preventDefault();act({type:'fullscreen'})}
-      else if(actions[event.code]){event.preventDefault();act(actions[event.code])}
-      else if(event.code==='KeyS'){event.preventDefault();void run(()=>window.muxivra.playerScreenshot(owner),'截图已保存')}
+      else if(shortcut){event.preventDefault();act(actions[shortcut]!)}
+      else if(matchShortcut(event,'player.screenshot',shortcuts)){event.preventDefault();void run(()=>window.muxivra.playerScreenshot(owner),'截图已保存')}
     }
     window.addEventListener('keydown',listener);return()=>window.removeEventListener('keydown',listener)
-  },[active,usable,state.volume,state.muted,state.fullscreen,owner])
-  const icon=(label:string,Icon:typeof Play,action:PlayerAction,disabled=false)=><Button title={label} aria-label={label} variant="ghost" size="icon" disabled={!usable||disabled} onClick={()=>act(action)}><Icon size={17}/></Button>
+  },[active,usable,state.volume,state.muted,state.fullscreen,owner,shortcuts])
+  const title=(label:string,id:ShortcutId)=>shortcuts[id]?`${label} · ${formatShortcut(shortcuts[id])}`:label
+  const actionShortcut:Partial<Record<PlayerAction['type'],ShortcutId>>={toggle:'player.toggle',mute:'player.mute',fullscreen:'player.fullscreen','frame-next':'player.frameNext','frame-previous':'player.framePrevious'}
+  const icon=(label:string,Icon:typeof Play,action:PlayerAction,disabled=false)=><Button title={actionShortcut[action.type]?title(label,actionShortcut[action.type]!):label} aria-label={label} variant="ghost" size="icon" disabled={!usable||disabled} onClick={()=>act(action)}><Icon size={17}/></Button>
   const tracks=(kind:'audio'|'sub')=>state.tracks.filter(track=>track.type===kind)
   const trackLabel=(track:PlayerState['tracks'][0])=>`${track.id} · ${track.title||track.lang||track.codec||'未命名'}${track.external?' · 外部':''}`
   return <div className={`mpv-player ${state.fullscreen?'player-fullscreen':''}`} data-player-owner={owner} tabIndex={0}>
@@ -92,7 +97,7 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
         <input className="player-volume" type="range" aria-label="音量" min={0} max={100} step={1} disabled={!usable} value={volumeDraft??state.volume} onPointerDown={()=>{volumeControl.current.editing=true}} onChange={event=>changeVolume(+event.target.value)} onPointerUp={releaseVolume} onPointerCancel={releaseVolume} onBlur={releaseVolume} onKeyDown={event=>{const direction=['ArrowRight','ArrowUp'].includes(event.key)?1:['ArrowLeft','ArrowDown'].includes(event.key)?-1:0;if(direction){event.preventDefault();changeVolume((volumeControl.current.value??state.volume)+direction*5)}}}/>
         <Input className="player-volume-number" aria-label="音量百分比" type="number" min={0} max={100} step={1} onKeyDown={event=>{if(['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();changeVolume((volumeControl.current.value??state.volume)+(event.key==='ArrowUp'?5:-5))}}} disabled={!usable} value={Math.round(volumeDraft??state.volume)} onChange={event=>{if(event.target.value!=='')changeVolume(+event.target.value)}}/><span className="player-volume-value">%</span>
         <Select notifyOnReselect aria-label="播放速度" value={state.speed} onChange={event=>act({type:'speed',value:+event.target.value})}>{[.25,.5,.75,1,1.25,1.5,2,3,4].map(speed=><option value={speed} key={speed}>{speed}×</option>)}</Select>
-        <Button title="截图" aria-label="截图" variant="ghost" size="icon" disabled={!usable||!hasVideo} onClick={()=> run(()=>window.muxivra.playerScreenshot(owner),'截图已保存')}><Camera size={17}/></Button>
+        <Button title={title('截图','player.screenshot')} aria-label="截图" variant="ghost" size="icon" disabled={!usable||!hasVideo} onClick={()=> run(()=>window.muxivra.playerScreenshot(owner),'截图已保存')}><Camera size={17}/></Button>
         {icon(state.fullscreen?'退出全屏':'全屏',state.fullscreen?Minimize:Maximize,{type:'fullscreen'})}
       </div>
       <details className="player-options"><summary>播放设置与列表{state.playlist.length>1?` · ${state.playlist.length} 项`:''}</summary>

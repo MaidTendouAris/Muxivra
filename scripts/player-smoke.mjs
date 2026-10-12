@@ -56,10 +56,13 @@ try {
   post(mpvChild,0x100,0x20,0);post(mpvChild,0x101,0x20,0);await wait(s=>!s.paused&&s.positionMs>200)
   post(mpvChild,0x100,0x20,0);post(mpvChild,0x101,0x20,0);await wait(s=>s.paused)
   const rectType=koffi.struct('MuxivraSmokeRect',{left:'int',top:'int',right:'int',bottom:'int'}),getRect=user.func('GetClientRect','bool',['uintptr_t',koffi.out(koffi.pointer(rectType))]),getDC=user.func('uintptr_t __stdcall GetDC(uintptr_t window)'),releaseDC=user.func('int __stdcall ReleaseDC(uintptr_t window, uintptr_t dc)'),gdi=koffi.load('gdi32.dll'),getPixel=gdi.func('uint32_t __stdcall GetPixel(uintptr_t dc, int x, int y)')
-  await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(true);w.show()});await page.waitForTimeout(500)
+  // Constrain the window so the popup opens over video. On taller desktops
+  // Radix can legitimately place the entire speed menu below the player.
+  const previousNativeBounds=await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0],bounds=w.getBounds();w.setBounds({width:1380,height:720});w.setAlwaysOnTop(true);w.show();return bounds});await page.waitForTimeout(500)
   await page.getByRole('combobox',{name:'播放速度',exact:true}).click();await page.getByRole('listbox').waitFor();await page.waitForTimeout(150)
   const pointType=koffi.struct('MuxivraSmokePoint',{x:'int',y:'int'}),toScreen=user.func('ClientToScreen','bool',['uintptr_t',koffi.inout(koffi.pointer(pointType))]),hitWindow=user.func('WindowFromPoint','uintptr_t',[pointType]),ancestor=user.func('uintptr_t __stdcall GetAncestor(uintptr_t window, uint32_t flags)')
   const nativeRect={},origin={x:0,y:0};getRect(mpvChild,nativeRect);toScreen(mpvChild,origin);const dc=getDC(0),colors=new Set()
+  const pixelGeometry=async()=>{const rect={},screen={x:0,y:0};getRect(mpvChild,rect);toScreen(mpvChild,screen);const player=await state();return {rect,screen,positionMs:player.positionMs,paused:player.paused,dom:await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),scroll:await page.evaluate(()=>({x:scrollX,y:scrollY,innerWidth,innerHeight}))}}
   try{
     const menu=await page.getByRole('listbox').boundingBox(),scale=await page.evaluate(()=>devicePixelRatio),clientPoint={x:0,y:0};toScreen(main,clientPoint)
     const box={left:Math.round(clientPoint.x+menu.x*scale),top:Math.round(clientPoint.y+menu.y*scale),right:Math.round(clientPoint.x+(menu.x+menu.width)*scale),bottom:Math.round(clientPoint.y+(menu.y+menu.height)*scale)}
@@ -71,10 +74,21 @@ try {
     assert.ok(ring.length>10,'Speed menu must overlap native video')
     for(const theme of ['dark','light']) {
       await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.waitForTimeout(150)
+      const beforeGeometry=await pixelGeometry()
       const withMenu=ring.map(p=>getPixel(dc,p.x,p.y))
-      await page.keyboard.press('Escape');await page.waitForTimeout(200);const baseline=ring.map(p=>getPixel(dc,p.x,p.y))
+      await page.keyboard.press('Escape');await page.waitForTimeout(200)
+      const afterGeometry=await pixelGeometry()
+      assert.deepEqual(afterGeometry.rect,beforeGeometry.rect,'Popup changed native video dimensions; pixel baselines would not be comparable')
+      assert.equal(beforeGeometry.paused,true);assert.equal(afterGeometry.paused,true);assert.equal(afterGeometry.positionMs,beforeGeometry.positionMs,'Popup changed the paused video frame')
+      // Radix scroll locking can shift a fractional CSS margin by 0.2px. At
+      // 125% DPI this moves the native child by one screen pixel. Compare the
+      // same video-content coordinate instead of adjacent screen pixels.
+      const dx=afterGeometry.screen.x-beforeGeometry.screen.x,dy=afterGeometry.screen.y-beforeGeometry.screen.y
+      const baseline=ring.map(p=>getPixel(dc,p.x+dx,p.y+dy))
       // D3D output dithering can vary a channel by 1 between paused redraws.
-      for(let index=0;index<ring.length;index++)for(const shift of [0,8,16])assert.ok(Math.abs(((withMenu[index]>>shift)&255)-((baseline[index]>>shift)&255))<=3,'Menu clipping exposed a dark perimeter outside the popup: '+theme)
+      const bad=ring.map((point,index)=>({point,withMenu:withMenu[index],baseline:baseline[index],delta:[0,8,16].map(shift=>Math.abs(((withMenu[index]>>shift)&255)-((baseline[index]>>shift)&255)))})).filter(sample=>sample.delta.some(delta=>delta>3))
+      if(bad.length)console.log('Popup perimeter pixel mismatches:',JSON.stringify({theme,count:bad.length,samples:bad.slice(0,30),menu,scale,beforeGeometry,afterGeometry}))
+      assert.equal(bad.length,0,'Menu clipping exposed a dark perimeter outside the popup: '+theme)
       await page.getByRole('combobox',{name:'播放速度',exact:true}).click();await page.getByRole('listbox').waitFor();await page.waitForTimeout(150)
     }
     for(let x=2;x<8;x++)for(let y=2;y<8;y++){const sample={x:origin.x+Math.round(nativeRect.right*x/10),y:origin.y+Math.round(nativeRect.bottom*y/10)};assert.equal(Number(ancestor(hitWindow(sample),2)),main,'Sampled area must belong to the test application');colors.add(getPixel(dc,sample.x,sample.y))}
@@ -87,7 +101,7 @@ try {
     try{assert.ok(blit(memory,0,0,width,height,dc,clientOrigin.x,clientOrigin.y,0x00cc0020));select(memory,old);assert.equal(bits(memory,bitmap,0,height,pixels,info,0),height);for(let i=3;i<pixels.length;i+=4)pixels[i]=255
       const png=await desktop.evaluate(({nativeImage},value)=>nativeImage.createFromBitmap(Buffer.from(value.bytes,'base64'),value.size).toPNG().toString('base64'),{bytes:pixels.toString('base64'),size:{width,height}});await writeFile('artifacts/qa/player-native.png',Buffer.from(png,'base64'))
     }finally{select(memory,old);deleteObject(bitmap);deleteDC(memory)}
-  }finally{releaseDC(0,dc);await page.keyboard.press('Escape');await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setAlwaysOnTop(false))}
+  }finally{releaseDC(0,dc);await page.keyboard.press('Escape');await desktop.evaluate(({BrowserWindow},bounds)=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(false);w.setBounds(bounds)},previousNativeBounds);await page.waitForTimeout(150)}
   console.log('Native video pixels verified');assert.ok(colors.size>6,'Native surface did not render video pixels')
   console.log('Video decoded by mpv')
   assert.equal(await page.locator('video,audio').count(),0)

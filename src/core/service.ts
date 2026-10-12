@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { join,basename } from 'node:path'
 import { readFile, writeFile, stat, realpath, mkdir, access } from 'node:fs/promises'
 import { constants } from 'node:fs'
@@ -18,6 +18,8 @@ import { UsageMonitor } from './hardware/usage'
 import { builtInPresets } from './presets'
 import { parseSrt, serializeSrt } from './subtitles/srt'
 import { makeWaveform } from './media/waveform'
+import { McpRequestStore } from './mcp/requests'
+import type { DirectoryAccessRequest, TranscodeApprovalRequest, McpRequest } from '../shared/mcp-requests'
 
 interface Configuration { settings: Settings; engine?: Engine; engines: Engine[]; presets: Preset[]; defaultOutputRoot?:string }
 export class MediaService extends EventEmitter {
@@ -27,6 +29,7 @@ export class MediaService extends EventEmitter {
   readonly usage:UsageMonitor
   private configStore: JsonStore<Configuration>
   private sessionStore: JsonStore<SubtitleDocument | undefined>
+  private requestStore: McpRequestStore
   private configuration!: Configuration
   private configOperations: Promise<unknown> = Promise.resolve()
   private download: DownloadState = { state: 'idle', percent: 0, message: '' }
@@ -40,6 +43,7 @@ export class MediaService extends EventEmitter {
   beforeSaveSettings?: (settings: Settings) => Promise<void>
   constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string) {
     super(); this.queue = new JobQueue(dataPath); this.hardware=new HardwareStore(dataPath,()=>this.emit('update')); this.configStore = new JsonStore(join(dataPath,'config.json')); this.sessionStore = new JsonStore(join(dataPath,'subtitle-session.json'))
+    this.requestStore = new McpRequestStore(join(dataPath,'mcp-requests.json'), () => this.emit('update'))
     this.usage=new UsageMonitor(()=>this.hardware.info,hardwareWorkerPath)
     this.queue.on('update',() => this.emit('update'))
     this.queue.on('storage-error',message => { this.notice = message; this.emit('update') })
@@ -47,7 +51,7 @@ export class MediaService extends EventEmitter {
   async initialize(): Promise<void> {
     const defaults: Configuration = { settings: { theme: 'dark', concurrency: 1, mcp: { enabled: false, port: 19480, token: randomBytes(32).toString('hex'), inputRoots: [], outputRoots: [], allowInspect: true, allowSubmit: true, allowCancel: true } }, engines: [], presets: [] }
     this.configuration = await this.configStore.read(defaults)
-    settingsSchema.parse(this.configuration.settings)
+    this.configuration.settings = settingsSchema.parse(this.configuration.settings)
     this.configuration.presets.forEach(preset => presetSchema.parse(preset))
     // Replace the app-managed output grant if an installation is relocated;
     // manually configured output grants remain intact.
@@ -73,6 +77,15 @@ export class MediaService extends EventEmitter {
     }
     await this.configStore.write(this.configuration)
     await this.queue.initialize()
+    await this.requestStore.initialize(async request => {
+      if (request.kind === 'directory') {
+        const roots = request.payload.permission === 'input' ? this.settings.mcp.inputRoots : this.settings.mcp.outputRoots
+        return roots.some(root => localPath(root).toLowerCase() === request.payload.path.toLowerCase()) ? {} : undefined
+      }
+      const fingerprint = createHash('sha256').update(JSON.stringify(request.payload.requests)).digest('hex')
+      const jobs = this.queue.jobs.filter(job => job.source === 'mcp' && job.requestKey === `approval-${request.id}`)
+      return jobs.length === request.payload.requests.length && jobs.every(job => job.requestFingerprint === fingerprint && job.requestJobCount === request.payload.requests.length && !job.requestExpired) ? { jobIds: jobs.map(job => job.id) } : undefined
+    })
     await this.hardware.initialize()
     this.queue.concurrency = this.configuration.settings.concurrency
     this.queue.start()
@@ -84,7 +97,7 @@ export class MediaService extends EventEmitter {
   }
   get settings(): Settings { return structuredClone(this.configuration.settings) }
   get engine(): Engine { if (!this.configuration.engine) throw new Error('未配置 FFmpeg，请前往设置选择或下载引擎'); return structuredClone(this.configuration.engine) }
-  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
+  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, mcpRequests: this.requestStore.counts(), notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
   private roots(source: Source, output = false): string[] | undefined { return source === 'mcp' ? (output ? this.settings.mcp.outputRoots : this.settings.mcp.inputRoots) : undefined }
   private permission(source: Source, action: 'allowInspect' | 'allowSubmit' | 'allowCancel'): void { if (source === 'mcp' && (!this.settings.mcp.enabled || !this.settings.mcp[action])) throw new Error('此 MCP 操作未获授权，请检查设置') }
   async inspect(input: string, source: Source = 'gui') { this.permission(source,'allowInspect'); return inspectMedia(this.engine,await this.paths.input(input,this.roots(source))) }
@@ -112,6 +125,52 @@ export class MediaService extends EventEmitter {
       normalized.push({ ...parsed, inputPath: await this.paths.input(parsed.inputPath,this.roots(source)), outputPath: await this.paths.output(parsed.outputPath,this.roots(source,true)) })
     }
     return this.queue.submit(normalized,source,key,(request,reserved) => this.makePlan(request,source,reserved))
+  }
+  private requireMcpRequests(): void { if (!this.settings.mcp.enabled) throw new Error('MCP 服务未启用，无法创建申请') }
+  mcpRequests(): McpRequest[] { return this.requestStore.list() }
+  mcpRequest(id: string): McpRequest { return this.requestStore.get(id) }
+  async requestDirectoryAccess(input: DirectoryAccessRequest): Promise<McpRequest> {
+    this.requireMcpRequests()
+    return this.requestStore.create({ kind: 'directory', requestKey: input.requestKey, reason: input.reason, payload: { path: input.path, permission: input.permission } }, async action => {
+      if (action.kind !== 'directory') throw new Error('申请类型无效')
+      const path = await realpath(localPath(action.payload.path))
+      if (!(await stat(path)).isDirectory()) throw new Error('申请路径必须是现有本地目录')
+      return { ...action, payload: { ...action.payload, path } }
+    })
+  }
+  async requestTranscode(input: TranscodeApprovalRequest): Promise<McpRequest> {
+    this.requireMcpRequests()
+    return this.requestStore.create({ kind: 'transcode', requestKey: input.requestKey, reason: input.reason, payload: { requests: input.requests } }, async action => {
+      if (action.kind !== 'transcode') throw new Error('申请类型无效')
+      const reserved = this.queue.reserved(), requests: JobRequest[] = []
+      for (const request of action.payload.requests) {
+        const parsed = requestSchema.parse(request)
+        const normalized = { ...parsed, inputPath: await this.paths.input(parsed.inputPath,this.roots('mcp')), outputPath: await this.paths.output(parsed.outputPath,this.roots('mcp',true)) }
+        if (normalized.options.subtitleFile) normalized.options.subtitleFile = await this.paths.input(normalized.options.subtitleFile,this.roots('mcp'))
+        const plan = await this.makePlan(normalized,'mcp',reserved)
+        reserved.add(plan.outputPath.toLowerCase()); requests.push(normalized)
+      }
+      return { ...action, payload: { requests } }
+    })
+  }
+  async reviewMcpRequest(id: string, approve: boolean, note?: string): Promise<McpRequest> {
+    return this.requestStore.review(id,approve,note,async request => {
+      this.requireMcpRequests()
+      if (request.kind === 'directory') {
+        await this.exclusiveConfig(async () => {
+          const path = await realpath(localPath(request.payload.path))
+          if (path.toLowerCase() !== request.payload.path.toLowerCase() || !(await stat(path)).isDirectory()) throw new Error('申请目录已发生变化，请重新申请')
+          const settings = this.settings, key = request.payload.permission === 'input' ? 'inputRoots' : 'outputRoots'
+          if (!settings.mcp[key].some(root => localPath(root).toLowerCase() === path.toLowerCase())) settings.mcp[key].push(path)
+          await this.saveSettingsWithinLock(settings)
+        })
+        return {}
+      }
+      // A GUI approval authorizes this exact batch once; it does not change the
+      // persistent allowSubmit setting or expand any directory permission.
+      const jobs = await this.queue.submit(request.payload.requests,'mcp',`approval-${request.id}`,(job,reserved) => { this.requireMcpRequests(); return this.makePlan(job,'mcp',reserved) })
+      return { jobIds: jobs.map(job => job.id) }
+    })
   }
   async planBatch(requests: JobRequest[], source: Source = 'gui') {
     if (!Array.isArray(requests) || !requests.length || requests.length > 500) throw new Error('一次检查应包含 1 至 500 个任务')
@@ -163,12 +222,13 @@ export class MediaService extends EventEmitter {
     await this.track(operation)
   }
   async saveSettings(settings: Settings): Promise<Snapshot> {
-    return this.exclusiveConfig(async () => {
+    return this.exclusiveConfig(() => this.saveSettingsWithinLock(settings))
+  }
+  private async saveSettingsWithinLock(settings: Settings): Promise<Snapshot> {
       const parsed = settingsSchema.parse(settings)
       parsed.mcp.outputRoots=this.outputRoots(parsed.mcp.outputRoots)
       if(parsed.mcp.outputRoots.length>(this.defaultMcpOutputRoot?33:32))throw new Error('最多添加 32 个输出目录，另含可用的默认 outputs 目录')
       for (const root of [...parsed.mcp.inputRoots,...parsed.mcp.outputRoots]) if (!(await stat(await realpath(localPath(root)))).isDirectory()) throw new Error('MCP 授权路径必须是现有目录')
-      if (parsed.mcp.enabled && !parsed.mcp.inputRoots.length) throw new Error('开启 MCP 前请手动添加媒体目录')
       if (parsed.mcp.enabled && !parsed.mcp.outputRoots.length) throw new Error('默认 outputs 不可用，请添加可用的输出目录')
       const next = { ...this.configuration, settings: parsed }
       try { await this.beforeSaveSettings?.(parsed); await this.configStore.write(next) }
@@ -178,7 +238,6 @@ export class MediaService extends EventEmitter {
         throw error
       }
       this.configuration = next; this.queue.concurrency = parsed.concurrency; this.queue.start(); this.emit('update'); return this.snapshot()
-    })
   }
   async savePreset(preset: Preset): Promise<Snapshot> { return this.exclusiveConfig(async () => { const parsed = presetSchema.parse(preset); if (builtInPresets.some(p => p.id === parsed.id)) throw new Error('内置预设不能覆盖'); if(this.configuration.presets.length>=500&&!this.configuration.presets.some(p=>p.id===parsed.id))throw new Error('个人预设数量不能超过 500'); const next = { ...this.configuration, presets: [...this.configuration.presets.filter(p => p.id !== parsed.id),parsed] }; await this.configStore.write(next); this.configuration = next; this.emit('update'); return this.snapshot() }) }
   async deletePreset(id: string): Promise<Snapshot> { return this.exclusiveConfig(async () => { const next = { ...this.configuration, presets: this.configuration.presets.filter(p => p.id !== id) }; await this.configStore.write(next); this.configuration = next; this.emit('update'); return this.snapshot() }) }
@@ -214,5 +273,5 @@ export class MediaService extends EventEmitter {
   async exportSubtitles(document: SubtitleDocument, output: string): Promise<void> { const doc = subtitleSchema.parse(document); if (doc.sourcePath && (await canonicalInput(doc.sourcePath)).toLowerCase() === output.toLowerCase()) throw new Error('请导出到新文件，避免覆盖原字幕'); await writeFile(await this.paths.output(output),serializeSrt(doc.cues),{ flag: 'wx' }) }
   private track<T>(task: Promise<T>): Promise<T> { this.backgroundTasks.add(task); void task.finally(() => this.backgroundTasks.delete(task)).catch(() => {}); return task }
   async waveform(input: string): Promise<number[]> { const media = await this.inspect(input); return this.track(makeWaveform(this.engine,media,this.background.signal)) }
-  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush(); await this.sessionStore.flush() }
+  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush(); await this.sessionStore.flush() }
 }

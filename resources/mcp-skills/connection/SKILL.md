@@ -31,4 +31,4 @@ Muxivra 必须运行；关闭主窗口后托盘中的服务继续，退出应用
 
 401 表示凭据不匹配，403 表示 Host/Origin 或本机访问限制，406 通常是缺少正确 Accept。其他排错见 `read_skill({"id":"troubleshooting"})`。
 
-initialize 的 instructions 提供当前授权输入/输出目录、权限和硬件快照。安装目录下的 outputs 默认已提供；输入目录需用户在设置中手动添加。后续按 workflow 和 goals 处理需求，不能自行扩大输入授权。
+initialize 的 instructions 提供当前授权输入/输出目录、权限和硬件快照。安装目录下的 outputs 默认已提供；输入目录需用户在设置中手动添加，或通过 request_directory_access 发起申请并由用户在 MCP 交互页批准。服务可在输入目录尚未授权时连接；这不代表可以访问任何媒体。后续按 workflow 和 goals 处理需求，不能自行扩大输入授权。

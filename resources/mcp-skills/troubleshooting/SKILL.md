@@ -34,6 +34,8 @@ submit_jobs 返回初始 queued 状态及 ID。状态可能是 queued/running/pa
 
 输入/输出父目录须已授权且存在。权限分为分析查询、提交和任务控制；目录真实路径及链接边界会校验。用户提供新路径不自动扩大权限。不要修改应用的授权配置以绕过限制。
 
+需要新目录时用 request_directory_access 申请，已有目录下的任务需要单次确认时用 request_transcode。pending/approving 要等待，approved 看 jobIds，rejected 停止，failed 核对 error 和关联任务。每个申请保持同一 requestKey，重连后 get_request/list_requests 找回；服务器重启时不会自动重做不确定的操作。申请状态查询不受分析权限开关限制，但仍须使用当前有效凭据。所有持有同一凭据的客户端共享申请记录；不要在 reason 或 reviewerNote 中写入凭据。
+
 failed 时保留任务 error 与日志尾部。interrupted 表示进程曾中断，确认输出是否存在后再计划重新提交。已有输出拒绝覆盖；需要重试时使用新的目标路径或 conflict = number，并告知实际路径。
 
 处理前确保外部 FFmpeg/ffprobe 引擎已配置。内置 mpv 播放库不能代替转码引擎。指南未覆盖的需求先依据当前 schema/引擎核对；仍无法确认时向用户询问。

@@ -12,6 +12,7 @@ import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerRect, 
 import type { MediaService } from '../../core/service'
 import type { MediaInfo, SubtitleDocument } from '../../shared/types'
 import { serializeSrt } from '../../core/subtitles/srt'
+import { defaultShortcuts, mpvShortcutBindings, shortcutBindingsSchema, type ShortcutBindings } from '../../shared/shortcuts'
 
 const properties=['pause','time-pos','duration','volume','mute','speed','track-list','playlist','playlist-pos','path','media-title','video-params','video-out-params','aid','sid','audio-delay','sub-delay','loop-file','loop-playlist','ab-loop-a','ab-loop-b','eof-reached']
 let verifiedBinary:Promise<string>|undefined
@@ -41,9 +42,10 @@ class PlayerSession extends EventEmitter {
   private playlistLoop=false
   private operations:Promise<unknown>=Promise.resolve()
   private rect?:PlayerRect
+  private nativeKeys=new Set<string>()
   editorDocument?:SubtitleDocument
   editorTrack?:number
-  constructor(readonly owner:PlayerOwner,readonly window:BrowserWindow,readonly dataPath:string){
+  constructor(readonly owner:PlayerOwner,readonly window:BrowserWindow,readonly dataPath:string,private shortcuts:ShortcutBindings){
     super();this.state=emptyPlayerState(owner);this.surface=new NativePlayerSurface(window)
     this.ipc.on('event',event=>this.event(event));this.ipc.on('connection-error',error=>this.fail(error));this.ipc.on('disconnected',()=>{if(!this.closing)this.fail(new Error('mpv 进程已断开'))})
     this.initialized=this.initialize()
@@ -63,10 +65,19 @@ class PlayerSession extends EventEmitter {
     this.process.on('error',error=>{this.abort.abort();this.fail(error)})
     this.process.on('exit',code=>{this.abort.abort();if(!this.closing)this.fail(new Error(`mpv 已退出 (${code})${this.stderr?'：'+this.stderr:''}`))})
     await this.ipc.connect(pipe,this.abort.signal)
+    await this.applyShortcuts(this.shortcuts)
     for(let index=0;index<properties.length;index++)await this.ipc.command(['observe_property',index+1,properties[index]])
     this.state.version=await this.ipc.command(['get_property','mpv-version']);this.state.ready=true;this.changed()
   }
   async execute<T>(operation:()=>Promise<T>):Promise<T>{const next=this.operations.catch(()=>{}).then(async()=>{await this.initialized;return operation()});this.operations=next;return next}
+  async applyShortcuts(bindings:ShortcutBindings):Promise<void>{
+    const next=mpvShortcutBindings(bindings,this.owner)
+    // mpv keybind replaces a key; clearing old assignments prevents shortcuts
+    // from continuing to run after the user changes or disables them.
+    for(const key of [...this.nativeKeys])if(!next.has(key)){await this.command(['keybind',key,'ignore']);this.nativeKeys.delete(key)}
+    for(const [key,command] of next){await this.command(['keybind',key,command]);this.nativeKeys.add(key)}
+    this.shortcuts={...bindings}
+  }
   async command(command:unknown[]):Promise<any>{try{return await this.ipc.command(command)}catch(error){throw new Error(`${command[0]}：${(error as Error).message}${this.stderr?'\n'+this.stderr:''}`)}}
   private fail(error:Error):void {this.state.ready=false;this.state.loading=false;this.state.error=error.message;this.surface.hide();this.changed()}
   changed():void {if(!this.timer)this.timer=setTimeout(()=>{this.timer=undefined;this.emit('state',structuredClone(this.state))},80)}
@@ -124,11 +135,24 @@ class PlayerSession extends EventEmitter {
 
 export class MpvPlayers extends EventEmitter {
   private sessions=new Map<PlayerOwner,PlayerSession>()
-  constructor(readonly window:BrowserWindow,readonly service:MediaService){super()}
+  private shortcuts:ShortcutBindings
+  private shortcutChanges:Promise<void>=Promise.resolve()
+  constructor(readonly window:BrowserWindow,readonly service:MediaService,bindings:ShortcutBindings=defaultShortcuts){super();this.shortcuts=shortcutBindingsSchema.parse(bindings)}
+  async setShortcuts(bindings:ShortcutBindings):Promise<void>{
+    const next=shortcutBindingsSchema.parse(bindings)
+    const update=this.shortcutChanges.catch(()=>{}).then(async()=>{
+      const previous=this.shortcuts;if(JSON.stringify(next)===JSON.stringify(previous))return
+      this.shortcuts=next
+      const active=()=>[...this.sessions.values()].filter(session=>session.state.ready||!session.state.error)
+      try{await Promise.all(active().map(session=>session.execute(()=>session.applyShortcuts(next))))}
+      catch(error){this.shortcuts=previous;await Promise.allSettled(active().map(session=>session.execute(()=>session.applyShortcuts(previous))));throw error}
+    })
+    this.shortcutChanges=update;return update
+  }
   private session(owner:PlayerOwner):PlayerSession {
     let session=this.sessions.get(owner)
     if(!session){
-      session=new PlayerSession(owner,this.window,this.service.dataPath);this.sessions.set(owner,session)
+      session=new PlayerSession(owner,this.window,this.service.dataPath,this.shortcuts);this.sessions.set(owner,session)
       session.on('state',state=>this.emit('state',state))
       session.on('input',type=>{void this.input(session!,type).catch(error=>this.emit('action-error',String(error.message)))})
       session.on('file-loaded',()=>{if(session!.editorDocument)void this.subtitles(owner,session!.editorDocument).catch(error=>this.emit('action-error',String(error.message)))})

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { shortcutBindingsSchema } from './shortcuts'
 import { parameters, filterLibrary, internalEncoderParameters, type ParameterValue } from './parameters'
 
 const advancedShape:Record<string,z.ZodType> = {}
@@ -33,6 +34,7 @@ export const presetSchema = z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,12
 export const presetFileSchema = z.object({format:z.literal('muxivra-presets'),version:z.literal(1),presets:z.array(presetSchema).min(1).max(200)}).strict()
 export const settingsSchema = z.object({
   theme: z.enum(['dark','light','system']), concurrency: z.number().int().min(1).max(4),
+  shortcuts:shortcutBindingsSchema,
   mcp: z.object({ enabled: z.boolean(), port: z.number().int().min(1024).max(65535), token: z.string().regex(/^[a-f0-9]{64}$/),
     inputRoots: z.array(pathSchema).max(32), outputRoots: z.array(pathSchema).max(33),
     allowInspect: z.boolean(), allowSubmit: z.boolean(), allowCancel: z.boolean()

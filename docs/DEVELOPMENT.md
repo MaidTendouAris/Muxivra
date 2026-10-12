@@ -33,6 +33,7 @@ npm run smoke:parameters
 npm run smoke:ui
 npm run smoke:mcp-setup
 npm run smoke:tasks
+npm run smoke:interaction
 ```
 
 集成及桌面测试需要可调用的外部 FFmpeg，用于生成临时媒体。报告与截图保存到 `artifacts/qa/`，配置和数据在 `.test-data/` 中隔离。实际验收结果、安装版验证和下载测试开关见 [验收记录](VERIFICATION.md)。
@@ -41,7 +42,7 @@ npm run smoke:tasks
 
 `npm run dev` 准备播放器后启动 electron-vite；`npm run build` 包含类型检查和三端构建。`npm run package:win` 准备播放器并生成 Windows x64 NSIS 安装包及依赖许可清单。`scripts/icons.mjs` 可重新生成应用 PNG/ICO。
 
-测试集中于参数/路径边界、字幕往返、真实转码、取消、恢复、MCP 及播放器异步消息。`npm run smoke:desktop` 在隔离配置中验证四个页面、转码、字幕编辑及 MCP/托盘。`npm run smoke:player` 验证播放器全部动作、原生键盘、无外部引擎播放和实际视频像素，短暂置顶自己的测试窗口以截图，随后恢复。普通 Chromium 页面截图无法捕获原生视频区域。设置 `MUXIVRA_EXECUTABLE` 可以测试打包或已安装 EXE。
+测试集中于参数/路径边界、字幕往返、真实转码、取消、恢复、MCP 及播放器异步消息。`npm run smoke:desktop` 在隔离配置中验证单文件、批量处理、任务、字幕编辑和设置页面，以及转码、MCP/托盘。`npm run smoke:player` 验证播放器全部动作、原生键盘、无外部引擎播放和实际视频像素，短暂置顶自己的测试窗口以截图，随后恢复。普通 Chromium 页面截图无法捕获原生视频区域。设置 `MUXIVRA_EXECUTABLE` 可以测试打包或已安装 EXE。
 
 `npm run smoke:mcp-setup` 验证通用连接提示词、凭据预览隐藏、保存失败不更新剪贴板、实际 MCP 连接上下文、7 份指南和参数查询；只添加输入目录后，实际通过默认 outputs 完成 AAC 转码并核对媒体，输出仍不能作为未经输入授权的文件读取。另验证离开设置时保存失败保持页面和草稿。测试不修改客户端个人配置或持久环境变量，结束恢复剪贴板并清理自己的输出文件。
 
@@ -49,9 +50,11 @@ npm run smoke:tasks
 
 `npm run smoke:tasks` 使用 106 条合成旧记录和真实媒体副本验证三页历史、详情、完整 Unicode 日志、单条及跨页删除、媒体哈希保留和重启恢复，并单独执行一条真实 AAC 队列任务核对完整处理记录。合成历史不代表执行了 105 次转码。
 
-`scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入、任务历史六组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
+0.10.0 新增的 `npm run smoke:interaction` 通过实际 MCP 客户端发起目录和转码申请，在应用内批准或拒绝；验证批准前无访问权限、拒绝不授权、审批加载反馈和重试去重。在持续提交权限关闭时批准一次 AAC M4A 转码，并用 ffprobe 核对输出。另验证快捷键二级页面的录入、冲突、未保存标记和离页应用，以及自定义按键在 React 与原生 mpv 视频区域生效、旧键失效、申请与快捷键重启保留。测试使用隔离配置和临时媒体，并检查明暗主题及最小窗口布局。
 
-安装脚本默认执行全部六组；相关改动复验可用 `-Suites tasks` 等已定义名称选择检查，仍在独立临时安装中验证并卸载。
+`scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入、任务历史、MCP 交互与快捷键七组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
+
+安装脚本默认执行全部七组；相关改动复验可用 `-Suites tasks` 或 `-Suites interaction` 等已定义名称选择检查，仍在独立临时安装中验证并卸载。
 
 内置指南位于 `resources/mcp-skills/<id>/SKILL.md`，由 `src/mcp/skills.ts` 导入并随安装包保留。调整请求字段、任务状态或引擎支持范围时，同步更新对应指南；参数参考直接来自共享定义。新增指南需要更新固定目录、连接入口和读取测试，不能将任意本机文件路径作为指南 ID。
 

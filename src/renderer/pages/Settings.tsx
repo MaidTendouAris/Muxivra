@@ -7,14 +7,19 @@ import { Button, Card, Field, Input, Select, Progress } from '../components/ui'
 import type { RunAction } from '../components/Jobs'
 import { SystemHardware, HardwareDetails } from '../components/SystemHardware'
 import { McpSetup } from '../components/McpSetup'
+import { Shortcuts } from './Shortcuts'
+import { defaultShortcuts } from '../../shared/shortcuts'
 
 export function Settings({snapshot,draft,onChange:setDraft,run,busy}:{snapshot:Snapshot;draft:SettingsType;onChange:(value:SettingsType)=>void;run:RunAction;busy:boolean}){
   const saved=JSON.stringify(snapshot.settings)
   const [hardwareDetails,setHardwareDetails]=useState(false)
+  const [shortcutDetails,setShortcutDetails]=useState(false)
   const changed=(key:keyof SettingsType['mcp'])=>JSON.stringify(draft.mcp[key])!==JSON.stringify(snapshot.settings.mcp[key])
   const patchMcp=(patch:Partial<SettingsType['mcp']>)=>setDraft({...draft,mcp:{...draft.mcp,...patch}})
   const addRoot=(kind:'inputRoots'|'outputRoots')=>run(async()=>{const path=await window.muxivra.selectDirectory(kind==='inputRoots'?'mcp-input':'mcp-output');if(path&&!draft.mcp[kind].includes(path))patchMcp({[kind]:[...draft.mcp[kind],path]})})
   const dirty=JSON.stringify(draft)!==saved
+  const saveBar=<div className={`settings-save ${dirty?'settings-dirty':''}`}><span className="hint">{dirty?'有未保存的更改':'已保存'} · {APP_VERSION}</span><Button disabled={!dirty||busy} onClick={()=> run(()=>window.muxivra.saveSettings(draft),'设置已保存')}><Check size={16}/>保存设置</Button></div>
+  if(shortcutDetails)return <div className="settings-layout"><Shortcuts bindings={draft.shortcuts??defaultShortcuts} saved={snapshot.settings.shortcuts??defaultShortcuts} onChange={shortcuts=>setDraft({...draft,shortcuts})} onBack={()=>setShortcutDetails(false)} busy={busy}/>{saveBar}</div>
   if(hardwareDetails)return <HardwareDetails snapshot={snapshot} run={run} busy={busy} onBack={()=>setHardwareDetails(false)}/>
   return <fieldset className="settings-layout settings-form" disabled={busy}>
     <SystemHardware snapshot={snapshot} run={run} busy={busy} onDetails={()=>setHardwareDetails(true)}/>
@@ -27,6 +32,7 @@ export function Settings({snapshot,draft,onChange:setDraft,run,busy}:{snapshot:S
     <div className="settings-columns"><Card title="播放器"><div className="setting-value"><span>mpv</span><strong>{mpv.version}</strong></div><div className="setting-value"><span>来源</span><span>内置 · Windows x64</span></div></Card><Card title="外观与任务">
       <div className="form-grid"><Field label="界面主题" changed={draft.theme!==snapshot.settings.theme}><Select disabled={busy} value={draft.theme} onChange={event=>setDraft({...draft,theme:event.target.value as SettingsType['theme']})}><option value="dark">深色</option><option value="light">浅色</option><option value="system">跟随系统</option></Select></Field><Field label="并发任务数" changed={draft.concurrency!==snapshot.settings.concurrency}><Select disabled={busy} value={draft.concurrency} onChange={event=>setDraft({...draft,concurrency:+event.target.value})}>{[1,2,3,4].map(value=><option key={value} value={value}>{value}</option>)}</Select></Field></div>
       <Button variant="ghost" size="sm" onClick={()=> run(()=>window.muxivra.reveal(snapshot.dataPath))}><FolderOpen size={15}/>打开配置目录</Button>
+      <Button variant="secondary" size="sm" disabled={busy} onClick={()=>setShortcutDetails(true)}>编辑快捷键{JSON.stringify(draft.shortcuts)!==JSON.stringify(snapshot.settings.shortcuts)&&<small className="setting-marker">未保存</small>}</Button>
     </Card></div>
     <Card title="MCP" aside={<label className={`switch-label ${changed('enabled')?'setting-changed':''}`}><input type="checkbox" aria-label="启用 MCP" checked={draft.mcp.enabled} onChange={event=>patchMcp({enabled:event.target.checked})}/>启用 MCP{changed('enabled')&&<small className="setting-marker">未保存</small>}</label>}>
       <div className="mcp-status"><span className={snapshot.mcp.running?'status status-completed':'tag'}>{snapshot.mcp.running?'运行中':'未开启'}</span>{snapshot.mcp.running&&<code>{snapshot.mcp.url}</code>}{snapshot.mcp.error&&<p className="error-inline">{snapshot.mcp.error}</p>}</div>
@@ -35,6 +41,6 @@ export function Settings({snapshot,draft,onChange:setDraft,run,busy}:{snapshot:S
         <div className="permission-list">{([['allowInspect','分析与查询'],['allowSubmit','提交任务'],['allowCancel','暂停 / 继续 / 取消任务']] as const).map(([key,label])=><label key={key} className={changed(key)?'setting-changed':''}><input type="checkbox" aria-label={label} checked={draft.mcp[key]} onChange={event=>patchMcp({[key]:event.target.checked})}/>{label}{changed(key)&&<small className="setting-marker">未保存</small>}</label>)}</div>
       </div><McpSetup snapshot={snapshot} draft={draft} dirty={dirty} run={run} busy={busy} onResetCredentials={()=>{const bytes=new Uint8Array(32);crypto.getRandomValues(bytes);patchMcp({token:Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('')})}}/></div>
     </Card>
-    <div className={`settings-save ${dirty?'settings-dirty':''}`}><span className="hint">{dirty?'有未保存的更改':'已保存'} · {APP_VERSION}</span><Button disabled={!dirty||busy} onClick={()=> run(()=>window.muxivra.saveSettings(draft),'设置已保存')}><Check size={16}/>保存设置</Button></div>
+    {saveBar}
   </fieldset>
 }

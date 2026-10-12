@@ -42,7 +42,7 @@ describe('真实 FFmpeg 与共享队列',()=>{
       expect(await readdir(directory)).toEqual([])
       expect(local.settings.mcp.inputRoots).toEqual([])
       expect(local.settings.mcp.outputRoots).toEqual([directory])
-      await expect(local.saveSettings({...local.settings,mcp:{...local.settings.mcp,enabled:true}})).rejects.toThrow('手动添加媒体目录')
+      await local.saveSettings({...local.settings,mcp:{...local.settings.mcp,enabled:true}}); await expect(local.inspect(input,'mcp')).rejects.toThrow('输入路径未获授权')
       const request={inputPath:input,outputPath:join(directory,'default-output.mp4'),options:defaultOptions}
       expect((await local.plan(request)).outputPath).toBe(request.outputPath)
       await local.paths.grantDirectory(root);await local.paths.grantDirectory(output)
@@ -199,7 +199,7 @@ describe('MCP HTTP 实际客户端',()=>{
   it('官方 SDK 客户端发现工具、计划、提交、查询与重连',async()=>{
     port=await freePort();const settings=service.settings;settings.mcp={...settings.mcp,enabled:true,port,inputRoots:[root],outputRoots:[output]};await service.saveSettings(settings);await host.configure(settings.mcp)
     async function connect(){const client=new Client({name:'muxivra-integration',version:'1.0'});await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`),{requestInit:{headers:{Authorization:`Bearer ${settings.mcp.token}`}}}));clients.push(client);return client}
-    const client=await connect();const tools=await client.listTools();expect(tools.tools.map(t=>t.name)).toContain('submit_jobs');expect(tools.tools).toHaveLength(16)
+    const client=await connect();const tools=await client.listTools();expect(tools.tools.map(t=>t.name)).toContain('submit_jobs');expect(tools.tools).toHaveLength(20)
       const hardware=await client.callTool({name:'get_system_hardware',arguments:{}});expect(hardware.isError).not.toBe(true);expect(JSON.parse((hardware.content as {text:string}[])[0].text)).toMatchObject({hardware:{version:2},accelerationValidation:'not-tested'})
     const resources=await client.listResources();expect(resources.resources[0].uri).toBe('muxivra://system/hardware');expect((await client.readResource({uri:resources.resources[0].uri})).contents).toHaveLength(1)
     const inspect=await client.callTool({name:'inspect_media',arguments:{path:input}});expect(inspect.isError).not.toBe(true)
@@ -238,7 +238,7 @@ describe('MCP HTTP 实际客户端',()=>{
     const initialized=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'muxivra-offline-script',version:'1.0'}}})})
     expect(initialized.status).toBe(200);expect((await initialized.json()).result.protocolVersion).toBe('2025-03-26')
     const notification=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})});expect(notification.status).toBe(202);expect(await notification.text()).toBe('')
-    const listed=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list'})});expect((await listed.json()).result.tools).toHaveLength(16)
+    const listed=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list'})});expect((await listed.json()).result.tools).toHaveLength(20)
     const guide=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'read_skill',arguments:{id:'workflow'}}})});const data=await guide.json();expect(data.result.isError).not.toBe(true);expect(JSON.parse(data.result.content[0].text).id).toBe('workflow')
   })
   it('拒绝未授权凭据、Host、Origin、路径和关闭的操作权限',async()=>{
@@ -289,7 +289,7 @@ describe('MCP HTTP 实际客户端',()=>{
       await new Promise(resolve=>setTimeout(resolve,100))
       const client=new Client({name:'muxivra-rollback-verification',version:'1.0'});clients.push(client)
       await client.connect(new StreamableHTTPClientTransport(new URL(service.mcpState.url!),{requestInit:{headers:{Authorization:`Bearer ${originalSettings.mcp.token}`}}}))
-      expect((await client.listTools()).tools).toHaveLength(16)
+      expect((await client.listTools()).tools).toHaveLength(20)
       const persisted=JSON.parse(await readFile(join(service.dataPath,'config.json'),'utf8'));expect(persisted.settings).toEqual(originalSettings)
     } finally {write.mockRestore();service.beforeSaveSettings=undefined}
   })

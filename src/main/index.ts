@@ -15,6 +15,7 @@ import { MpvPlayers } from './player'
 import { skillCatalog, readSkill, skillIds } from '../mcp/skills'
 import { buildMcpConnectionPrompt } from '../shared/mcp-connection'
 import { APP_VERSION } from '../shared/version'
+import { defaultShortcuts } from '../shared/shortcuts'
 
 app.setName('Muxivra')
 protocol.registerSchemesAsPrivileged([{ scheme: 'muxivra', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
@@ -33,7 +34,7 @@ async function createWindow(): Promise<void> {
     icon: join(app.getAppPath(),'resources/icon.ico'), webPreferences: { preload: join(__dirname,'../preload/index.js'), contextIsolation: true, sandbox: true, nodeIntegration: false } })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate',event => event.preventDefault())
-  players=new MpvPlayers(window,service)
+  players=new MpvPlayers(window,service,service.settings.shortcuts)
   players.on('state',state=>{if(window&&!window.isDestroyed())window.webContents.send('muxivra:player-state',state)})
   players.on('editor-event',event=>window?.webContents.send('muxivra:player-event',event))
   players.on('screenshot-request',owner=>{void takeScreenshot(owner).catch(error=>dialog.showErrorBox('截图失败',error.message))})
@@ -93,6 +94,9 @@ function registerIpc(): void {
     return callback(...args)
   })
   handle('snapshot',() => service.snapshot())
+  handle('mcpRequests',()=>service.mcpRequests())
+  handle('mcpRequest',id=>service.mcpRequest(z.string().uuid().parse(id)))
+  handle('reviewMcpRequest',(id,approve,note)=>service.reviewMcpRequest(z.string().uuid().parse(id),z.boolean().parse(approve),z.string().max(1000).optional().parse(note)))
   handle('exitState',()=>exitPrompt)
   handle('requestExit',()=>requestExit())
   handle('respondToExit',async confirm=>{
@@ -180,7 +184,7 @@ if (hasLock) void app.whenReady().then(async () => {
   const engines = process.env.MUXIVRA_ENGINE_PATH ? resolve(process.env.MUXIVRA_ENGINE_PATH) : join(process.env.LOCALAPPDATA ?? app.getPath('home'),'Muxivra','engines','ffmpeg')
   const outputs = join(app.isPackaged?dirname(app.getPath('exe')):app.getAppPath(),'outputs')
   service = new MediaService(data,engines,outputs,join(__dirname,'hardware-worker.js')); await service.initialize(); mcp = new McpHost(service)
-  service.beforeSaveSettings = settings => mcp.configure(settings.mcp)
+  service.beforeSaveSettings = async settings => {await mcp.configure(settings.mcp);await players?.setShortcuts(settings.shortcuts??defaultShortcuts)}
   if (service.settings.mcp.enabled) { try { await mcp.configure(service.settings.mcp) } catch (e) { service.mcpState = { running: false, error: (e as Error).message } } }
   let updateTimer: ReturnType<typeof setTimeout> | undefined
   service.on('update',() => { if (updateTimer) return; updateTimer = setTimeout(() => { updateTimer = undefined; if (window && !window.isDestroyed()) window.webContents.send('muxivra:update',service.snapshot()) },150) })

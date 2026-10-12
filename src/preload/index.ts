@@ -3,6 +3,7 @@ import type { MuxivraApi } from '../shared/types'
 
 const invoke = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`muxivra:${method}`,...args)
 const api: MuxivraApi = {
+  mcpRequests:()=>invoke('mcpRequests'),mcpRequest:id=>invoke('mcpRequest',id),reviewMcpRequest:(id,approve,note)=>invoke('reviewMcpRequest',id,approve,note),
   exitState:()=>invoke('exitState'),requestExit:()=>invoke('requestExit'),respondToExit:confirm=>invoke('respondToExit',confirm),
   onExitState:callback=>{const listener=(_event:unknown,state:Parameters<typeof callback>[0])=>callback(state);ipcRenderer.on('muxivra:exit-state',listener);return()=>ipcRenderer.removeListener('muxivra:exit-state',listener)},
   snapshot: () => invoke('snapshot'), selectFiles: (kind,multiple) => invoke('selectFiles',kind,multiple), selectDirectory: purpose => invoke('selectDirectory',purpose),

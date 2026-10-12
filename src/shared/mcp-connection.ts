@@ -27,5 +27,6 @@ export function buildMcpConnectionPrompt(settings:McpSettings, info:McpSetupInfo
 - list_skills / read_skill 返回离线指南及版本：${info.skills.map(s=>`${s.id}（${s.name}）`).join('、')}。先读 workflow，模糊需求再读 goals；parameters 附带实际参数定义。
 - resources/read 可读取 muxivra://skills/<id>、muxivra://reference/parameters、muxivra://system/hardware；muxivra_workflow 提供操作流程。
 - 硬件和引擎查询返回能力及缺失状态；not-tested 表示硬件加速尚未验证。plan_transcode 返回计划和警告，不执行任务。
+- request_directory_access / request_transcode 返回待审申请 ID；用户在 MCP 交互页批准或拒绝，get_request 查询结果及 jobIds。pending 不是授权或已创建任务。已授权操作仍可直接执行。
 - submit_jobs 返回任务 ID 与初始状态；之后通过 get_job 查询进度、耗时、预计剩余时间及最终结果。提交成功不代表处理完成。`
 }
