@@ -1,5 +1,13 @@
 appId: dev.muxivra.desktop
 productName: Muxivra
+afterPack: scripts/prepare-installer-manifest.cjs
+electronUpdaterCompatibility: ">=2.16"
+publish:
+  provider: github
+  owner: MaidTendouAris
+  repo: Muxivra
+  releaseType: release
+  tagNamePrefix: v
 directories:
   output: release
   buildResources: resources
@@ -35,10 +43,12 @@ win:
   executableName: Muxivra
   signExecutable: false
 nsis:
+  include: resources/installer.nsh
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   license: LICENSE
+  deleteAppDataOnUninstall: false
 artifactName: Muxivra-${version}-win-${arch}-setup.${ext}

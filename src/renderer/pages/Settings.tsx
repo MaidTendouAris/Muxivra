@@ -9,8 +9,9 @@ import { SystemHardware, HardwareDetails } from '../components/SystemHardware'
 import { McpSetup } from '../components/McpSetup'
 import { Shortcuts } from './Shortcuts'
 import { defaultShortcuts } from '../../shared/shortcuts'
+import { AppUpdateCard, type AppUpdateControls } from '../components/AppUpdate'
 
-export function Settings({snapshot,draft,onChange:setDraft,run,busy}:{snapshot:Snapshot;draft:SettingsType;onChange:(value:SettingsType)=>void;run:RunAction;busy:boolean}){
+export function Settings({snapshot,draft,onChange:setDraft,run,busy,appUpdate}:{snapshot:Snapshot;draft:SettingsType;onChange:(value:SettingsType)=>void;run:RunAction;busy:boolean;appUpdate:AppUpdateControls}){
   const saved=JSON.stringify(snapshot.settings)
   const [hardwareDetails,setHardwareDetails]=useState(false)
   const [shortcutDetails,setShortcutDetails]=useState(false)
@@ -21,7 +22,7 @@ export function Settings({snapshot,draft,onChange:setDraft,run,busy}:{snapshot:S
   const saveBar=<div className={`settings-save ${dirty?'settings-dirty':''}`}><span className="hint">{dirty?'有未保存的更改':'已保存'} · {APP_VERSION}</span><Button disabled={!dirty||busy} onClick={()=> run(()=>window.muxivra.saveSettings(draft),'设置已保存')}><Check size={16}/>保存设置</Button></div>
   if(shortcutDetails)return <div className="settings-layout"><Shortcuts bindings={draft.shortcuts??defaultShortcuts} saved={snapshot.settings.shortcuts??defaultShortcuts} onChange={shortcuts=>setDraft({...draft,shortcuts})} onBack={()=>setShortcutDetails(false)} busy={busy}/>{saveBar}</div>
   if(hardwareDetails)return <HardwareDetails snapshot={snapshot} run={run} busy={busy} onBack={()=>setHardwareDetails(false)}/>
-  return <fieldset className="settings-layout settings-form" disabled={busy}>
+  return <div className="settings-layout"><AppUpdateCard {...appUpdate}/><fieldset className="settings-layout settings-form" disabled={busy}>
     <SystemHardware snapshot={snapshot} run={run} busy={busy} onDetails={()=>setHardwareDetails(true)}/>
     <Card title="转码引擎 · FFmpeg" aside={<span className={snapshot.engine?'status status-completed':'status status-failed'}>{snapshot.engine?'已就绪':'未配置'}</span>}>
       {snapshot.engine&&<div className="engine-current"><strong>{snapshot.engine.version}</strong><p className="path-text">{snapshot.engine.ffmpegPath}</p></div>}
@@ -42,5 +43,5 @@ export function Settings({snapshot,draft,onChange:setDraft,run,busy}:{snapshot:S
       </div><McpSetup snapshot={snapshot} draft={draft} dirty={dirty} run={run} busy={busy} onResetCredentials={()=>{const bytes=new Uint8Array(32);crypto.getRandomValues(bytes);patchMcp({token:Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('')})}}/></div>
     </Card>
     {saveBar}
-  </fieldset>
+  </fieldset></div>
 }

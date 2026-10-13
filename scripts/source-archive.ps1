@@ -6,7 +6,7 @@ if (-not $archiveOutput.StartsWith($projectRoot + [IO.Path]::DirectorySeparatorC
 New-Item -ItemType Directory -Path $archiveOutput -Force | Out-Null
 $packageMetadata = Get-Content -LiteralPath (Join-Path $projectRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $archivePath = Join-Path $archiveOutput "Muxivra-$($packageMetadata.version)-source.zip"
-$includedNames = @('src','tests','scripts','resources','docs','README.md','README.zh-CN.md','LICENSE','THIRD-PARTY-NOTICES.txt','package.json','package-lock.json','tsconfig.json','electron.vite.config.ts','electron-builder.yml','vitest.config.ts','vitest.integration.config.ts','components.json','.gitignore','.npmrc')
+$includedNames = @('src','tests','scripts','resources','docs','.github','README.md','README.zh-CN.md','LICENSE','THIRD-PARTY-NOTICES.txt','package.json','package-lock.json','tsconfig.json','electron.vite.config.ts','electron-builder.yml','vitest.config.ts','vitest.integration.config.ts','components.json','.gitignore','.npmrc')
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $stream = [IO.File]::Open($archivePath,[IO.FileMode]::Create)

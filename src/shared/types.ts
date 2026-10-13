@@ -63,11 +63,18 @@ export interface Snapshot {
 }
 export interface ExitPrompt {
   phase: 'confirm' | 'closing'; running: number; waiting: number; paused: number; mcpRunning: boolean; error?: string
+  reason?: 'update'; updateVersion?: string
+  runtimeStopped?: boolean
 }
 export interface McpSkillSummary { id:string; name:string; description:string; uri:string; version:string }
 export interface McpSkillDocument extends McpSkillSummary { markdown:string; parameterReference?:unknown }
 export interface McpSetupInfo { executablePath?:string; version:string; running:boolean; skills:McpSkillSummary[] }
 export interface MuxivraApi {
+  appUpdateState(): Promise<import('./app-update').AppUpdateState>
+  checkAppUpdate(): Promise<import('./app-update').AppUpdateState>
+  downloadAppUpdate(): Promise<import('./app-update').AppUpdateState>
+  installAppUpdate(): Promise<void>
+  onAppUpdate(callback: (state: import('./app-update').AppUpdateState) => void): () => void
   snapshot(): Promise<Snapshot>
   mcpRequests(): Promise<import('./mcp-requests').McpRequest[]>
   mcpRequest(id:string): Promise<import('./mcp-requests').McpRequest>

@@ -1,6 +1,6 @@
 {
   "name": "muxivra",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "本地媒体处理、批量转码与字幕工作台",
   "main": "out/main/index.js",
   "author": "Muxivra contributors",
@@ -27,7 +27,8 @@
     "smoke:tasks": "node scripts/task-history-smoke.mjs",
     "smoke:interaction": "node scripts/mcp-interaction-smoke.mjs",
     "smoke:subtitles": "node scripts/subtitle-project-smoke.mjs",
-    "smoke:subtitle-layout": "node scripts/subtitle-layout-smoke.mjs"
+    "smoke:subtitle-layout": "node scripts/subtitle-layout-smoke.mjs",
+    "smoke:update": "node scripts/update-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
@@ -36,6 +37,7 @@
     "@radix-ui/react-slot": "1.3.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "6.8.10",
     "koffi": "3.3.2",
     "lucide-react": "1.52.0",
     "react": "19.3.0",

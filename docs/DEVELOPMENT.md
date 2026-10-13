@@ -20,7 +20,11 @@ npm start
 npm run package:win
 ```
 
-`npm start` 运行本地构建。NSIS 安装包输出到 `release/`；源码归档与第三方许可说明见 [发行文档](DISTRIBUTION.md)。转码需要外部 FFmpeg/ffprobe，应用中的选择或下载流程见 [使用指南](USAGE.md)。
+`npm start` 运行本地构建。NSIS 安装包输出到 `release/`；源码归档、GitHub Releases 工作流与第三方许可说明见 [发行文档](DISTRIBUTION.md)。转码需要外部 FFmpeg/ffprobe，应用中的选择或下载流程见 [使用指南](USAGE.md)。
+
+安装包更新使用 `electron-updater`。开发模式禁用真实更新，打包时依据 `electron-builder.yml` 中固定的 GitHub 仓库生成 `resources/app-update.yml`，同时生成 `latest.yml` 和安装包 blockmap。`node scripts/package-check.mjs` 验证包内更新依赖和固定仓库；设置 `MUXIVRA_RELEASE_DIR` 后还要求发行元数据存在，并核对安装包版本、文件名、大小、SHA-512 与 blockmap。更新使用方式见 [应用更新](updates.md)。
+
+`scripts/prepare-installer-manifest.cjs` 的 afterPack hook 将应用文件清单写入忽略目录 `.runtime/`；`resources/installer.nsh` 将清单编译进卸载程序。删除时只处理这些应用文件，先在安装目录内暂存，遇到文件锁则恢复；不递归删除整个安装目录。构建后不能手动向发行包添加文件而跳过清单生成。`node scripts/installer-preservation-smoke.mjs` 编译独立 NSIS 夹具，验证更新/卸载保留输出与未知文件、文件锁回滚和旧版本安装保护，不访问注册表、创建快捷方式或安装真实应用；可用 `MUXIVRA_NSIS_PATH` 指定本机 makensis.exe。
 
 ## 检查与维护
 
@@ -35,6 +39,7 @@ npm run smoke:mcp-setup
 npm run smoke:tasks
 npm run smoke:interaction
 npm run smoke:subtitles
+npm run smoke:update
 ```
 
 集成及桌面测试需要可调用的外部 FFmpeg，用于生成临时媒体。报告与截图保存到 `artifacts/qa/`，配置和数据在 `.test-data/` 中隔离。实际验收结果、安装版验证和下载测试开关见 [验收记录](VERIFICATION.md)。
@@ -55,6 +60,8 @@ npm run smoke:subtitles
 
 `npm run smoke:subtitles` 在隔离配置中验证 ASS 工程创建、已有文件载入、60 秒真实自动保存、原文备份、外部修改拒绝、另存、重启恢复、ASS/SSA/SRT 转换、基础样式与批量编辑。使用 10000 条合成字幕检查 50 条分页和末页定位；这不代表完整 Aegisub 性能或格式兼容验证。
 
+`npm run smoke:update` 同时启用两项测试开关，模拟新版本、网络和下载失败、安装启动失败；验证启动检测、手动检查、进度、重启确认、设置草稿保护和字幕保存。不会下载或执行安装程序。集成测试另外使用真实 electron-updater 下载隔离的无害文本夹具，验证 SHA-512、缓存和重试；安装启动仅替换进程启动边界进行模拟。
+
 `scripts/install-smoke.ps1` 检查已有安装与运行进程，在项目 `.test-data` 内临时安装当前版本 NSIS 包，运行桌面、播放器、参数/预设、界面/退出、MCP 接入、任务历史、MCP 交互与快捷键、ASS 工程与字幕编辑八组验证，再卸载；发现已有安装或正式运行进程时停止。`scripts/source-archive.ps1` 生成应用源码包，排除播放器二进制、依赖缓存和用户数据，保留准备脚本、清单和许可。
 
 安装脚本默认执行全部八组；相关改动复验可用 `-Suites tasks`、`-Suites interaction` 或 `-Suites subtitles` 等已定义名称选择检查，仍在独立临时安装中验证并卸载。
@@ -68,6 +75,7 @@ npm run smoke:subtitles
 | `MUXIVRA_DATA_PATH` | 隔离的配置、任务与会话目录 |
 | `MUXIVRA_ENGINE_PATH` | 独立引擎测试目录 |
 | `MUXIVRA_SMOKE=1` | 自动测试退出时不弹出交互确认 |
+| `MUXIVRA_UPDATE_TEST=1` | 仅与 SMOKE 同时启用更新测试驱动；不执行真实更新 |
 | `MUXIVRA_EXECUTABLE` | 桌面验证所启动的 EXE |
 
 新增引擎版本时，从发布方核对固定下载 URL、SHA-256、版本、架构、许可证与源码地址；更新固定清单后跑真实处理与下载验证，再发布。不要改用未固定的 latest 下载，也不要打包 `--enable-nonfree` 构建。

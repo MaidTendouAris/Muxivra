@@ -18,6 +18,9 @@ import { APP_VERSION } from '../shared/version'
 import { defaultShortcuts } from '../shared/shortcuts'
 import { SubtitleProjectLocationError } from '../core/subtitles/project'
 import type { SubtitleDocument } from '../shared/types'
+import { AppUpdates } from './app-updater'
+import { UpdateFixture } from './update-fixture'
+import { GuardedNsisUpdater } from './nsis-updater'
 
 app.setName('Muxivra')
 protocol.registerSchemesAsPrivileged([{ scheme: 'muxivra', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
@@ -27,6 +30,8 @@ if (!hasLock) app.quit()
 let window: BrowserWindow | undefined, tray: Tray | undefined, service: MediaService, mcp: McpHost, players:MpvPlayers
 let quitting = false, exitInProgress = false, firstHide = true
 let exitPrompt: ExitPrompt | undefined
+let appUpdates: AppUpdates
+let runtimeStopped=false
 const engineGrants = new Set<string>()
 const devUrl = process.env.ELECTRON_RENDERER_URL
 const rendererRoot = resolve(__dirname,'../renderer')
@@ -46,6 +51,7 @@ async function createWindow(): Promise<void> {
   window.on('close',event => {
     if (quitting) return
     if (exitInProgress) { event.preventDefault(); return }
+    if (runtimeStopped) { event.preventDefault(); window?.show(); return }
     if (exitPrompt) setExitPrompt(undefined)
     event.preventDefault(); window?.hide()
     if (firstHide && tray && process.env.MUXIVRA_SMOKE !== '1') { firstHide = false; tray.displayBalloon({ title: 'Muxivra 仍在运行', content: '任务与 MCP 服务继续运行。双击托盘图标可打开；从托盘菜单退出应用。' }) }
@@ -57,16 +63,18 @@ async function createWindow(): Promise<void> {
 async function requestExit(force = false): Promise<void> {
   if (exitInProgress) return
   if (!force) {
+    setExitPrompt(undefined)
     setExitPrompt(exitSummary('confirm'))
     if (window?.isMinimized()) window.restore()
     window?.show(); window?.focus()
     return
   }
+  setExitPrompt(undefined)
   await finishExit()
 }
 function exitSummary(phase:ExitPrompt['phase']):ExitPrompt {
   const jobs=service.queue.jobs
-  return {phase,running:jobs.filter(j=>j.status==='running').length,waiting:jobs.filter(j=>j.status==='queued').length,paused:jobs.filter(j=>j.status==='paused').length,mcpRunning:!!service.mcpState.running}
+  return {phase,running:jobs.filter(j=>j.status==='running').length,waiting:jobs.filter(j=>j.status==='queued').length,paused:jobs.filter(j=>j.status==='paused').length,mcpRunning:!!service.mcpState.running,runtimeStopped,...(exitPrompt?.reason==='update'?{reason:'update',updateVersion:exitPrompt.updateVersion}: {})}
 }
 function setExitPrompt(state:ExitPrompt|undefined):void {
   exitPrompt=state
@@ -74,11 +82,18 @@ function setExitPrompt(state:ExitPrompt|undefined):void {
 }
 async function finishExit():Promise<void> {
   if(exitInProgress)return
+  const installingUpdate=exitPrompt?.reason==='update'
+  if(installingUpdate)appUpdates.assertReady()
   exitInProgress=true
   setExitPrompt(exitSummary('closing'))
   try {
-    await players?.shutdown(); await mcp.stop(); await service.shutdown(); tray?.destroy(); quitting=true; app.quit()
+    runtimeStopped=true
+    await players?.shutdown(); await mcp.stop(); await service.shutdown(); quitting=true
+    if(installingUpdate)await appUpdates.install();else app.quit()
+    tray?.destroy()
   } catch(error) {
+    quitting=false
+    if(installingUpdate)appUpdates.markInstallError(error)
     setExitPrompt({...exitSummary('confirm'),error:(error as Error).message})
     throw error
   } finally { exitInProgress = false }
@@ -96,6 +111,16 @@ function registerIpc(): void {
     return callback(...args)
   })
   handle('snapshot',() => service.snapshot())
+  handle('appUpdateState',()=>appUpdates.state)
+  handle('checkAppUpdate',()=>appUpdates.check())
+  handle('downloadAppUpdate',()=>appUpdates.download())
+  handle('installAppUpdate',()=>{
+    if(exitInProgress)return
+    appUpdates.assertReady()
+    setExitPrompt({...exitSummary('confirm'),reason:'update',updateVersion:appUpdates.state.version})
+    if(window?.isMinimized())window.restore()
+    window?.show();window?.focus()
+  })
   handle('mcpRequests',()=>service.mcpRequests())
   handle('mcpRequest',id=>service.mcpRequest(z.string().uuid().parse(id)))
   handle('reviewMcpRequest',(id,approve,note)=>service.reviewMcpRequest(z.string().uuid().parse(id),z.boolean().parse(approve),z.string().max(1000).optional().parse(note)))
@@ -105,6 +130,7 @@ function registerIpc(): void {
     z.boolean().parse(confirm)
     if(exitInProgress)return
     if(!exitPrompt)throw new Error('没有待确认的退出请求')
+    if(!confirm&&runtimeStopped)throw new Error('后台服务已停止，请重试安装或退出应用')
     if(confirm)await finishExit();else setExitPrompt(undefined)
   })
   handle('selectFiles',async (kind,multiple) => {
@@ -213,6 +239,26 @@ if (hasLock) void app.whenReady().then(async () => {
   const engines = process.env.MUXIVRA_ENGINE_PATH ? resolve(process.env.MUXIVRA_ENGINE_PATH) : join(process.env.LOCALAPPDATA ?? app.getPath('home'),'Muxivra','engines','ffmpeg')
   const outputs = join(app.isPackaged?dirname(app.getPath('exe')):app.getAppPath(),'outputs')
   service = new MediaService(data,engines,outputs,join(__dirname,'hardware-worker.js')); await service.initialize(); mcp = new McpHost(service)
+  const testUpdates=process.env.MUXIVRA_SMOKE==='1'&&process.env.MUXIVRA_UPDATE_TEST==='1'
+  const fixture=testUpdates?new UpdateFixture(()=>app.quit(),APP_VERSION):undefined
+  const updater=fixture??(app.isPackaged&&process.platform==='win32'&&process.env.MUXIVRA_SMOKE!=='1'?new GuardedNsisUpdater():undefined)
+  if(updater&&!fixture){
+    const nativeUpdater=updater as GuardedNsisUpdater
+    nativeUpdater.disableWebInstaller=true
+    // GitHub cannot serve the previous release's blockmap from the new release.
+    // A full installer also supports users skipping several releases.
+    nativeUpdater.disableDifferentialDownload=true
+  }
+  appUpdates=new AppUpdates(updater,APP_VERSION,process.env.MUXIVRA_SMOKE==='1'?'自动测试模式不连接更新服务器':'开发模式不检查应用更新，请使用 Windows 安装版。')
+  appUpdates.on('state',state=>{if(window&&!window.isDestroyed())window.webContents.send('muxivra:app-update',state)})
+  if(fixture)Object.defineProperty(globalThis,'__muxivraUpdateTest',{value:(request:unknown)=>{
+    if(request!==undefined){
+      const value=z.object({mode:z.enum(['available','current','error','download-error','downloaded','install-error']),delayMs:z.number().min(50).max(3000).optional()}).parse(request)
+      fixture.mode=value.mode;if(value.delayMs!==undefined)fixture.delayMs=value.delayMs
+      if(value.mode==='downloaded'){fixture.emit('update-available',fixture.release);fixture.emit('update-downloaded',fixture.release)}
+    }
+    return {state:appUpdates.state,checks:fixture.checks,downloads:fixture.downloads,installs:fixture.installs}
+  }})
   service.beforeSaveSettings = async settings => {await mcp.configure(settings.mcp);await players?.setShortcuts(settings.shortcuts??defaultShortcuts)}
   if (service.settings.mcp.enabled) { try { await mcp.configure(service.settings.mcp) } catch (e) { service.mcpState = { running: false, error: (e as Error).message } } }
   let updateTimer: ReturnType<typeof setTimeout> | undefined
@@ -222,6 +268,9 @@ if (hasLock) void app.whenReady().then(async () => {
   tray.setToolTip('Muxivra · 本地媒体工作台'); tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Muxivra', click: () => { window?.show(); window?.focus() } },{ type: 'separator' },{ label: '退出应用', click: () => { void requestExit() } }]))
   tray.on('double-click',() => { window?.show(); window?.focus() })
   await createWindow()
+  // Check once per process launch, after the first window is ready. A failed
+  // network request changes updater state without delaying the application.
+  void appUpdates.startup()
   // Automated desktop checks run in an isolated profile and can exit without an interactive prompt.
   if (process.env.MUXIVRA_SMOKE === '1') ipcMain.handle('muxivra:smoke-exit',() => requestExit(true))
 }).catch(async error => { dialog.showErrorBox('Muxivra 启动失败',String(error)); quitting = true; await players?.shutdown().catch(()=>{});await mcp?.stop().catch(()=>{});await service?.shutdown().catch(() => {}); app.quit() })
