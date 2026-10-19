@@ -46,7 +46,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
           $version = $package.version
           if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Expected a stable semantic version.' }
           $shared = [regex]::Match((Get-Content src/shared/version.ts -Raw), "APP_VERSION\s*=\s*['`"]([^'`"]+)['`"]").Groups[1].Value
