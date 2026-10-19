@@ -81,6 +81,9 @@ jobs:
       - name: Prepare checksummed FFmpeg for integration tests
         run: ./scripts/prepare-ci-ffmpeg.ps1
 
+      - name: Prepare checksummed mpv for player integration tests
+        run: npm run prepare:mpv
+
       - name: Run unit tests
         run: npm test
 
