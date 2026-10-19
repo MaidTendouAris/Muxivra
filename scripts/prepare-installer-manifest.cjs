@@ -1,4 +1,4 @@
-const { readdir, mkdir, writeFile } = require('node:fs/promises')
+const { readdir, mkdir, writeFile, copyFile } = require('node:fs/promises')
 const { join, resolve, relative, dirname } = require('node:path')
 
 // Compile the package's own file names into the uninstaller. A runtime manifest
@@ -33,6 +33,12 @@ async function generateManifest(appOutDir, outputPath) {
 
 module.exports = async context => {
   if (context.electronPlatformName !== 'win32') return
+  // NSIS normally adds this after packaging starts, racing the ZIP target.
+  // Prepare it before either target reads the shared application directory.
+  const { getNsisElevatePath } = require('app-builder-lib/out/toolsets/windows')
+  const config = context.packager.config
+  const elevatePath = await getNsisElevatePath(config.toolsets?.nsis, config.nsis?.customNsisBinary)
+  await copyFile(elevatePath, join(context.appOutDir, 'resources', 'elevate.exe'))
   await generateManifest(resolve(context.appOutDir), join(context.packager.projectDir, '.runtime', 'installer-managed-files.nsh'))
 }
 module.exports.generateManifest = generateManifest

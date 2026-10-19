@@ -1,6 +1,8 @@
-import { describe,it,expect } from 'vitest'
+import { beforeEach,describe,it,expect } from 'vitest'
+import { setUiLanguage } from '../../src/renderer/lib/i18n'
 import { formatSubtitleText,subtitlePlainText } from '../../src/renderer/lib/subtitle-format'
 describe('ASS quick editing',()=>{
+  beforeEach(()=>setUiLanguage('zh-CN',[]))
   it('wraps the selected range without changing adjacent text and unwraps a selected formatted run',()=>{
     const next=formatSubtitleText('A hello Z',{start:2,end:7},'bold');expect(next.text).toBe('A {\\b1}hello{\\b0} Z')
     expect(formatSubtitleText(next.text,next,'bold').text).toBe('A hello Z')

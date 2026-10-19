@@ -14,9 +14,9 @@ example_media/
 *.log
 *.tsbuildinfo
 
-outputs/
+/outputs/
 
-projects/
+/projects/
 
 __pycache__/
 *.pyc

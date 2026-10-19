@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { setUiLanguage } from '../../src/renderer/lib/i18n'
 import { createSubtitleDocument } from '../../src/shared/subtitles'
 import { copyCues, pasteCues, shiftCues, splitCue, mergeCues, replaceSubtitleText, subtitleIssues } from '../../src/renderer/lib/subtitle-editor'
 import type { Cue } from '../../src/shared/types'
@@ -8,6 +9,7 @@ const cues = (): Cue[] => [
   { id: 'b', startMs: 1500, endMs: 2500, text: 'hello, next', style: 'Default' }
 ]
 describe('ASS 条目批量编辑', () => {
+  beforeEach(() => setUiLanguage('zh-CN', []))
   it('时间偏移只改变选择的边界，无效偏移拒绝且不部分修改', () => {
     const source = cues(), ids = new Set(['b'])
     const shifted = shiftCues(source, ids, 200, 'end')
