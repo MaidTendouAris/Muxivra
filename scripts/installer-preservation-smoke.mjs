@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
+import { load } from 'js-yaml'
 
 // This harness has no registry keys, shortcuts or real application payload.
 // It only invokes NSIS files that it generates under its own test directory.
@@ -15,7 +15,11 @@ const { generateManifest } = require('./prepare-installer-manifest.cjs')
 const project = resolve('.'), data = join(project, '.test-data')
 await mkdir(data, { recursive: true })
 const root = await mkdtemp(join(data, 'installer-preservation-'))
-const compiler = process.env.MUXIVRA_NSIS_PATH || join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'electron-builder', 'Cache', 'nsis', 'nsis-3.0.4.1', 'Bin', 'makensis.exe')
+const config = load(await readFile(join(project, 'electron-builder.yml'), 'utf8'))
+const compilerInfo = process.env.MUXIVRA_NSIS_PATH
+  ? { path: process.env.MUXIVRA_NSIS_PATH }
+  : await require('app-builder-lib/out/toolsets/windows').getMakeNsisPath(config.toolsets?.nsis, config.nsis?.customNsisBinary)
+const compiler = compilerInfo.path
 await access(compiler)
 const escape = value => value.replaceAll('$', '$$').replaceAll('/', '\\').replaceAll('"', '$\\"')
 const managed = { 'Muxivra.exe': 'application', 'LICENSE': 'license', 'resources/app.asar': 'archive', 'resources/mpv/mpv.exe': 'player', 'zz-busy.dll': 'locked runtime' }
@@ -27,7 +31,7 @@ async function seed(app, contents) {
   for (const [name, value] of Object.entries(contents)) { const file = join(app, name); await mkdir(resolve(file, '..'), { recursive: true }); await writeFile(file, value) }
 }
 async function hashes(app, contents) { return Object.fromEntries(await Promise.all(Object.keys(contents).map(async name => [name, digest(await readFile(join(app, name)))]))) }
-async function compile(file) { await run(compiler, ['/V2', file], { cwd: project, windowsHide: true, timeout: 30000 }) }
+async function compile(file) { await run(compiler, ['/V2', file], { cwd: project, env: { ...process.env, ...compilerInfo.env }, windowsHide: true, timeout: 30000 }) }
 async function launch(file, args = []) {
   try { await run(file, args, { cwd: root, windowsHide: true, timeout: 30000 }); return 0 }
   catch (error) { if (typeof error.code === 'number') return error.code; throw error }
