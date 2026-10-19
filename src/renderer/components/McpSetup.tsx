@@ -1,3 +1,4 @@
+import { tr } from '../lib/i18n'
 import { useEffect, useState } from 'react'
 import { BookOpen, Copy, Eye, KeyRound } from 'lucide-react'
 import type { McpSetupInfo, McpSkillDocument, Settings as SettingsType, Snapshot } from '../../shared/types'
@@ -11,34 +12,34 @@ export function McpSetup({snapshot,draft,dirty,run,busy,onResetCredentials}:{sna
   const config=`URL: http://127.0.0.1:${draft.mcp.port}/mcp\nTransport: Streamable HTTP\nAuthentication: Bearer\nCredential environment: MUXIVRA_MCP_TOKEN\nConnection timeout: 15s\nTool timeout: 60s`
   const tokenChanged=draft.mcp.token!==snapshot.settings.mcp.token
   const copy=()=>run(async()=>{
-    if(!Number.isInteger(draft.mcp.port)||draft.mcp.port<1024||draft.mcp.port>65535)throw new Error('MCP 端口必须为 1024–65535 的整数')
+    if(!Number.isInteger(draft.mcp.port)||draft.mcp.port<1024||draft.mcp.port>65535)throw new Error(tr("MCP 端口必须为 1024–65535 的整数"))
     if(dirty)await window.muxivra.saveSettings(draft)
     await window.muxivra.copyMcpConnectionPrompt()
     return true
-  },'完整连接提示词已复制')
+  },tr("完整连接提示词已复制"))
   const copyText=(text:string,message:string)=>run(async()=>{await window.muxivra.copyText(text);return true},message)
   return <div className="mcp-connect-panel">
     <section className="mcp-connect-card">
-      <div className="mcp-section-title"><Copy size={18}/><strong>连接 AI</strong></div>
-      <p>复制连接信息，发送给 AI，由其选择平台支持的连接方式。</p>
-      <Button disabled={busy||!draft.mcp.enabled||!info} loadingText="正在生成提示词…" onClick={copy}><Copy size={16}/>{dirty?'保存并复制完整连接提示词':'复制完整连接提示词'}</Button>
-      <div className="mcp-copy-meta"><span>包含地址、凭据、目录、权限和内置指南入口</span>{info&&<Button variant="ghost" size="sm" onClick={()=>setPreview(true)}><Eye size={14}/>预览</Button>}</div>
-      <p className="hint">提示词含连接凭据，仅发送给可信的 AI。客户端需要具备本机操作能力。</p>
-      {!draft.mcp.enabled&&<p className="hint">启用 MCP 后即可复制。媒体目录也可由 AI 申请，再由你确认。</p>}
+      <div className="mcp-section-title"><Copy size={18}/><strong>{tr("连接 AI")}</strong></div>
+      <p>{tr("复制连接信息，发送给 AI，由其选择平台支持的连接方式。")}</p>
+      <Button disabled={busy||!draft.mcp.enabled||!info} loadingText={tr("正在生成提示词…")} onClick={copy}><Copy size={16}/>{dirty?tr("保存并复制完整连接提示词"):tr("复制完整连接提示词")}</Button>
+      <div className="mcp-copy-meta"><span>{tr("包含地址、凭据、目录、权限和内置指南入口")}</span>{info&&<Button variant="ghost" size="sm" onClick={()=>setPreview(true)}><Eye size={14}/>{tr("预览")}</Button>}</div>
+      <p className="hint">{tr("提示词含连接凭据，仅发送给可信的 AI。客户端需要具备本机操作能力。")}</p>
+      {!draft.mcp.enabled&&<p className="hint">{tr("启用 MCP 后即可复制。媒体目录也可由 AI 申请，再由你确认。")}</p>}
       {error&&<p className="error-inline">{error}</p>}
     </section>
     <section className="mcp-guides-card">
-      <div className="mcp-section-title"><BookOpen size={18}/><strong>内置指南</strong><span className="tag">{info?.skills.length??7} 份 · 离线</span></div>
-      <div className="mcp-guide-grid">{info?.skills.map(skill=><button key={skill.id} className="mcp-guide-button" disabled={busy} onClick={()=>run(async()=>setGuide(await window.muxivra.mcpReadSkill(skill.id)))}><strong>{skill.name}</strong><span>{skill.description}</span></button>)}</div>
-      <p className="hint">AI 通过 list_skills / read_skill 按需读取；参数参考随应用定义生成。</p>
+      <div className="mcp-section-title"><BookOpen size={18}/><strong>{tr("内置指南")}</strong><span className="tag">{info?.skills.length??8} {tr("份 · 离线")}</span></div>
+      <div className="mcp-guide-grid">{info?.skills.map(skill=><button key={skill.id} className="mcp-guide-button" disabled={busy} onClick={()=>run(async()=>setGuide(await window.muxivra.mcpReadSkill(skill.id)))}><strong>{tr(skill.name)}</strong><span>{tr(skill.description)}</span></button>)}</div>
+      <p className="hint">{tr("AI 通过 list_skills / read_skill 按需读取；参数参考随应用定义生成。")}</p>
     </section>
-    <details className={`mcp-manual ${tokenChanged?'setting-changed':''}`}><summary>连接信息与凭据{tokenChanged&&<small className="setting-marker">凭据未保存</small>}</summary>
-      <pre className="code-box">{config}</pre><div className="toolbar wrap"><Button variant="secondary" size="sm" onClick={()=>copyText(config,'已复制配置')}><Copy size={14}/>复制配置</Button><Button variant="ghost" size="sm" onClick={()=>setReveal(!reveal)}><KeyRound size={14}/>{reveal?'隐藏凭据':'显示凭据'}</Button></div>
+    <details className={`mcp-manual ${tokenChanged?'setting-changed':''}`}><summary>{tr("连接信息与凭据")}{tokenChanged&&<small className="setting-marker">{tr("凭据未保存")}</small>}</summary>
+      <pre className="code-box">{config}</pre><div className="toolbar wrap"><Button variant="secondary" size="sm" onClick={()=>copyText(config,tr("已复制配置"))}><Copy size={14}/>{tr("复制配置")}</Button><Button variant="ghost" size="sm" onClick={()=>setReveal(!reveal)}><KeyRound size={14}/>{reveal?tr("隐藏凭据"):tr("显示凭据")}</Button></div>
       <pre className="code-box token-box">{reveal?draft.mcp.token:'••••••••••••••••••••••••••••••••'}</pre>
-      <Button variant="secondary" size="sm" onClick={()=>copyText(draft.mcp.token,'凭据已复制')}><Copy size={14}/>复制凭据</Button>
-      <Button variant="ghost" size="sm" disabled={busy} onClick={onResetCredentials}>重置凭据</Button>
+      <Button variant="secondary" size="sm" onClick={()=>copyText(draft.mcp.token,tr("凭据已复制"))}><Copy size={14}/>{tr("复制凭据")}</Button>
+      <Button variant="ghost" size="sm" disabled={busy} onClick={onResetCredentials}>{tr("重置凭据")}</Button>
     </details>
-    {preview&&info&&<Modal title="连接提示词预览" onClose={()=>setPreview(false)} className="mcp-document-modal"><p className="hint">凭据已隐藏。复制时使用保存成功的实际设置。</p><pre className="mcp-document">{buildMcpConnectionPrompt(draft.mcp,{...info,running:snapshot.mcp.running},true)}</pre></Modal>}
-    {guide&&<Modal title={guide.name} onClose={()=>setGuide(undefined)} className="mcp-document-modal"><div className="toolbar"><span className="hint">内置指南 · {guide.version}</span><Button variant="secondary" size="sm" onClick={()=>copyText(guide.markdown,'指南已复制')}><Copy size={14}/>复制指南</Button></div><pre className="mcp-document">{guide.markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/,'')}</pre></Modal>}
+    {preview&&info&&<Modal title={tr("连接提示词预览")} onClose={()=>setPreview(false)} className="mcp-document-modal"><p className="hint">{tr("凭据已隐藏。复制时使用保存成功的实际设置。")}</p><pre className="mcp-document">{buildMcpConnectionPrompt(draft.mcp,{...info,running:snapshot.mcp.running},true)}</pre></Modal>}
+    {guide&&<Modal title={guide.name} onClose={()=>setGuide(undefined)} className="mcp-document-modal"><div className="toolbar"><span className="hint">{tr("内置指南 ·")}{guide.version}</span><Button variant="secondary" size="sm" onClick={()=>copyText(guide.markdown,tr("指南已复制"))}><Copy size={14}/>{tr("复制指南")}</Button></div><pre className="mcp-document">{guide.markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/,'')}</pre></Modal>}
   </div>
 }

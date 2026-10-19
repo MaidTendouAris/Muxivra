@@ -24,6 +24,12 @@ asarUnpack:
   - node_modules/koffi/**/*
   - node_modules/@koromix/**/*
 extraResources:
+  - from: resources/asr
+    to: asr
+    filter:
+      - '*.py'
+      - '*.json'
+      - '*.md'
   - from: resources/mpv
     to: mpv
     filter:
@@ -38,11 +44,14 @@ extraResources:
   - from: resources/mpv-input.conf
     to: mpv-input.conf
 win:
-  target: nsis
+  target:
+    - nsis
+    - zip
   icon: resources/icon.ico
   executableName: Muxivra
   signExecutable: false
 nsis:
+  artifactName: Muxivra-${version}-win-${arch}-setup.${ext}
   include: resources/installer.nsh
   oneClick: false
   perMachine: false
@@ -51,4 +60,4 @@ nsis:
   createStartMenuShortcut: true
   license: LICENSE
   deleteAppDataOnUninstall: false
-artifactName: Muxivra-${version}-win-${arch}-setup.${ext}
+artifactName: Muxivra-${version}-win-${arch}-portable.${ext}

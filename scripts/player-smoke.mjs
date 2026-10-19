@@ -103,9 +103,8 @@ try {
     }finally{select(memory,old);deleteObject(bitmap);deleteDC(memory)}
   }finally{releaseDC(0,dc);await page.keyboard.press('Escape');await desktop.evaluate(({BrowserWindow},bounds)=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(false);w.setBounds(bounds)},previousNativeBounds);await page.waitForTimeout(150)}
   console.log('Native video pixels verified');assert.ok(colors.size>6,'Native surface did not render video pixels')
-  // Native HWNDs cannot track Chromium's compositor during a burst of scroll
-  // frames. Verify they are suppressed during movement and restored exactly
-  // once scrolling settles, without seeking or pausing the media session.
+  // Moving the DOM host must keep video visible and update its native bounds
+  // and clipping throughout the scroll burst, without seeking or pausing.
   const scrollState=await state(),getWindowRegion=user.func('int __stdcall GetWindowRgn(uintptr_t window, uintptr_t region)'),makeRegion=gdi.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)'),pointInRegion=gdi.func('bool __stdcall PtInRegion(uintptr_t region, int x, int y)'),disposeRegion=gdi.func('bool __stdcall DeleteObject(uintptr_t object)')
   await desktop.evaluate(({ipcMain})=>{const original=ipcMain._invokeHandlers.get('muxivra:playerRect');ipcMain.removeHandler('muxivra:playerRect');globalThis.__lastNativeRects=[];ipcMain.handle('muxivra:playerRect',(event,owner,rect)=>{globalThis.__lastNativeRects.push({owner,rect});globalThis.__lastNativeRects=globalThis.__lastNativeRects.slice(-10);return original(event,owner,rect)})})
   await page.evaluate(()=>{
@@ -114,11 +113,22 @@ try {
     let index=0;const values=[100,230,40,190,80,210,50,180,70,160,110,200]
     const next=()=>{scrollTo(0,values[index++]);if(index<values.length)setTimeout(next,20);else globalThis.__nativeScrollFinished=true};next()
   })
-  for(let attempt=0;attempt<20&&isVisible(native);attempt++)await page.waitForTimeout(10)
-  assert.equal(isVisible(native),false,'Native video should not float over a moving DOM viewport')
+  const scrollColors=new Set(),scrollDC=getDC(0)
+  try{
+    for(let sample=0;sample<10;sample++){
+      await page.waitForTimeout(15);assert.equal(isVisible(native),true,'Scrolling hid the native video')
+      const box={},screen={x:0,y:0};getRect(mpvChild,box);toScreen(mpvChild,screen)
+      for(const x of [.25,.5,.75])for(const y of [.6,.75,.9]){
+        const point={x:Math.round(screen.x+box.right*x),y:Math.round(screen.y+box.bottom*y)}
+        let hit=Number(hitWindow(point));for(let depth=0;hit&&hit!==native&&depth<8;depth++)hit=Number(parentOf(hit))
+        if(hit===native){const color=getPixel(scrollDC,point.x,point.y);if(color!==0xffffffff)scrollColors.add(color)}
+      }
+    }
+  }finally{releaseDC(0,scrollDC)}
+  assert.ok(scrollColors.size>6,'Scrolling replaced video with a black surface')
   await page.waitForFunction(()=>globalThis.__nativeScrollFinished)
   for(let attempt=0;attempt<50&&!isVisible(native);attempt++)await page.waitForTimeout(20)
-  assert.equal(isVisible(native),true,'Native video did not return after scrolling stopped')
+  assert.equal(isVisible(native),true,'Native video disappeared after scrolling stopped')
   const aligned=await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),nativeOrigin={x:0,y:0},mainOrigin={x:0,y:0},dpi=await page.evaluate(()=>devicePixelRatio);toScreen(native,nativeOrigin);toScreen(main,mainOrigin)
   assert.ok(Math.abs(nativeOrigin.x-mainOrigin.x-Math.round(aligned.x*dpi))<=1)
   assert.ok(Math.abs(nativeOrigin.y-mainOrigin.y-Math.round(aligned.y*dpi))<=1)
@@ -148,7 +158,7 @@ try {
   await choose('播放速度','2');await wait(s=>s.speed===2)
   await page.getByRole('button',{name:'静音',exact:true}).click();await wait(s=>s.muted)
   await page.getByLabel('音量',{exact:true}).fill('37');await page.getByLabel('音量',{exact:true}).dispatchEvent('change');await wait(s=>Math.round(s.volume)===37)
-  await page.locator('.player-options > summary').click()
+  await page.getByRole('button',{name:'播放设置与列表',exact:true}).click()
   await page.getByLabel('跳转时间',{exact:true}).fill('00:00:02,000');await page.getByRole('button',{name:'跳转',exact:true}).click();await wait(s=>Math.abs(s.positionMs-2000)<45)
   const before=(await state()).positionMs;await page.getByRole('button',{name:'下一帧',exact:true}).click();await wait(s=>s.positionMs>before+20)
   await page.getByRole('button',{name:'上一帧',exact:true}).click();await wait(s=>s.positionMs<=before+10)
@@ -159,6 +169,7 @@ try {
   const positions=[];for(let i=0;i<12;i++){positions.push((await state()).positionMs);await page.waitForTimeout(100)}
   assert.ok(positions.some((value,index)=>index>0&&value<positions[index-1]-100),'A–B playback did not loop');assert.ok(Math.max(...positions)<3150)
   await page.getByRole('button',{name:'暂停',exact:true}).click();await wait(s=>s.paused)
+  await page.getByRole('button',{name:'播放设置与列表',exact:true}).click()
   await page.getByRole('button',{name:'清除 A–B',exact:true}).click();await wait(s=>s.loopA===undefined&&s.loopB===undefined)
   await choose('循环模式','file');await wait(s=>s.loop==='file');await choose('循环模式','none');await wait(s=>s.loop==='none')
   const audioTracks=(await state()).tracks.filter(t=>t.type==='audio');assert.equal(audioTracks.length,2)
@@ -190,6 +201,7 @@ try {
   await page.getByRole('button',{name:'退出全屏',exact:true}).click();await wait(s=>!s.fullscreen);await page.waitForFunction(()=>!document.querySelector('.player-fullscreen'))
   await page.screenshot({path:'artifacts/qa/player-controls.png',fullPage:true})
   await desktop.evaluate(({dialog},audio)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[audio]})},audio)
+  await page.getByRole('button',{name:'播放设置与列表',exact:true}).click()
   await page.getByRole('button',{name:'添加到列表',exact:true}).click();await wait(s=>s.playlist.length===2)
   await page.getByRole('button',{name:'下一项',exact:true}).click();await wait(s=>s.playlistIndex===1&&!s.loading&&s.tracks.some(t=>t.type==='audio')&&!s.tracks.some(t=>t.type==='video'))
   await page.getByRole('button',{name:'播放',exact:true}).click();await wait(s=>!s.paused&&s.positionMs>250)
@@ -197,6 +209,7 @@ try {
   assert.equal(isVisible(native),false)
   await page.getByRole('button',{name:'暂停',exact:true}).click();await wait(s=>s.paused)
   await page.screenshot({path:'artifacts/qa/player-audio.png',fullPage:true})
+  await page.getByRole('button',{name:'播放设置与列表',exact:true}).click()
   await page.getByRole('button',{name:'移除播放项 1',exact:true}).click();await wait(s=>s.playlist.length===1)
   await desktop.evaluate(({dialog},video)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[video]})},video)
   await page.getByRole('button',{name:'更换文件',exact:true}).click();await wait(s=>s.path===video&&s.videoWidth===480&&!s.loading&&s.playlist.length===1)
@@ -210,7 +223,7 @@ try {
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1040,height:720}));await page.waitForTimeout(300)
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
   assert.deepEqual(errors,[])
-  const report={appVersion:await desktop.evaluate(({app})=>app.getVersion()),executable:process.env.MUXIVRA_EXECUTABLE||'development',version:(await state()).version,features:['video','audio','pause','seek','speed','volume','mute','frames','ab-loop','repeat','audio-tracks','external-audio','external-subtitles','delays','screenshot','fullscreen','playlist'],noProcessingEnginePlayback:true,nativeChildWindow:true,nativeKeyboard:true,nativeVideoPixels:true,menuPerimeterPixelsMatchVideo:true,rapidScrollSuppressesStaleSurface:true,scrollSettledNativeAlignment:true,windowAndAncestorClipping:true,scrollPreservesPositionAndPause:true,delayedStateReselectMouseAndKeyboard:true,defaultVolume:50,volumeKeyboardStep:5,volumeDragIgnoresStaleState:true,portraitAndRotationAspect:true,viewportMaxHeight:540,parameterMenuKeepsVideoVisible:true,chromiumMediaElements:0,errors}
+  const report={appVersion:await desktop.evaluate(({app})=>app.getVersion()),executable:process.env.MUXIVRA_EXECUTABLE||'development',version:(await state()).version,features:['video','audio','pause','seek','speed','volume','mute','frames','ab-loop','repeat','audio-tracks','external-audio','external-subtitles','delays','screenshot','fullscreen','playlist'],noProcessingEnginePlayback:true,nativeChildWindow:true,nativeKeyboard:true,nativeVideoPixels:true,menuPerimeterPixelsMatchVideo:true,rapidScrollKeepsVideoVisible:true,rapidScrollVideoPixels:true,scrollSettledNativeAlignment:true,windowAndAncestorClipping:true,scrollPreservesPositionAndPause:true,delayedStateReselectMouseAndKeyboard:true,defaultVolume:50,volumeKeyboardStep:5,volumeDragIgnoresStaleState:true,portraitAndRotationAspect:true,viewportMaxHeight:540,parameterMenuKeepsVideoVisible:true,chromiumMediaElements:0,errors}
   await writeFile('artifacts/qa/player-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2))
 } finally {
   await desktop.close();const rel=relative(resolve('.test-data'),root);if(rel&&!rel.startsWith(`..${sep}`)&&!isAbsolute(rel))await rm(root,{recursive:true,force:true})

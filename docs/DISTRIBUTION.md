@@ -2,7 +2,9 @@
 
 ## 仓库与本地产物
 
-当前应用版本为 0.13.0。GitHub 仓库保存应用源码、锁文件、测试、构建脚本与许可证。安装包、构建缓存、测试产物和个人媒体不纳入 Git；打包后在本机 `release/` 中生成安装文件。
+GitHub 仓库保存应用源码、锁文件、测试、构建脚本与许可证，版本以 `package.json` 为准。安装包、构建缓存、模型、环境与个人媒体不纳入 Git；打包后在本机 `release/` 中生成发行文件。
+
+面向用户只分发两种 Windows x64 应用包：`Muxivra-<版本>-win-x64-portable.zip`（完整解压后运行 `Muxivra.exe`）和 `Muxivra-<版本>-win-x64-setup.exe`（NSIS 安装版）。不要仅复制 ZIP 中的 EXE。便携版不需要安装，但应用设置仍保存在 Windows 用户配置目录；项目、输出和 ASR 环境继续位于应用目录。请选择具有写入权限的位置。
 
 安装包目前未签名。实际验证范围与限制见 [验收记录](VERIFICATION.md)，构建方式见 [开发文档](DEVELOPMENT.md)。
 
@@ -12,24 +14,24 @@
 & .\scripts\source-archive.ps1
 ```
 
-脚本生成 `release/Muxivra-<版本>-source.zip`，包含应用源码、两份 README、docs、锁文件与构建脚本；排除播放器二进制、依赖缓存、测试数据和用户文件。
+脚本生成 `release/Muxivra-<版本>-source.zip`，供本地源码快照使用，自动发布不上传该文件。GitHub Release 自带对应标签的源码下载。快照排除播放器二进制、依赖缓存、测试媒体和用户文件。
 
 可用 PowerShell 检查交付文件的 SHA-256：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.13.0-win-x64-setup.exe
-Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.13.0-source.zip
+Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.25.0-win-x64-setup.exe
+Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.25.0-win-x64-portable.zip
 ```
 
 ## GitHub Releases 与更新
 
-正式版本发布到 [MaidTendouAris/Muxivra Releases](https://github.com/MaidTendouAris/Muxivra/releases)。安装版每次启动自动检查，也可从设置页手动检查；使用方法与发行文件要求见 [应用更新](updates.md)。
+正式版本发布到 [MaidTendouAris/Muxivra Releases](https://github.com/MaidTendouAris/Muxivra/releases)。安装版默认每次启动自动检查，可在设置底部软件信息卡片关闭，手动检查继续可用；使用方法与发行文件要求见 [应用更新](updates.md)。
 
-维护者先同步 `package.json`、锁文件和 `src/shared/version.ts` 中的版本号，再提交并推送对应 `v<版本>` 标签。`.github/workflows/release.yml` 会从该标签在 Windows 上安装锁定依赖、运行单元测试、构建 NSIS 包、验证更新元数据并归档应用源码。全部步骤通过后创建草稿 Release，上传安装包、blockmap、`latest.yml`、源码归档与 SHA-256 清单，最后发布为正式最新版本。也可以在 Actions 中手动运行该工作流并填入已有标签；标签与构建版本不一致时立即停止。
+维护者先同步 `package.json`、锁文件和 `src/shared/version.ts` 中的版本号，再提交并推送对应 `v<版本>` 标签。日常提交、PR、手动构建和标签发布共用 Windows 构建验证工作流；完整说明见 [GitHub Actions 构建与发布](RELEASING.md)。验证通过后才会上传便携 ZIP、安装 EXE 与自动更新必需的 `latest.yml`，最后发布草稿为正式最新版本。blockmap、单独源码包、校验清单不作为 Release 附件发布；校验结果保留在 Actions 验证报告中。
 
 ```powershell
-git tag v0.13.0
-git push origin v0.13.0
+git tag v0.25.0
+git push origin v0.25.0
 ```
 
 工作流使用仓库提供的 `GITHUB_TOKEN`，只在发布步骤作为 `GH_TOKEN` 提供；应用安装包和更新客户端不包含发布凭据。工作流拒绝覆盖任何已有同标签 Release。上传失败时留下草稿供维护者检查，重跑前应检查并处理草稿；已公开的版本应通过新的版本号修正。

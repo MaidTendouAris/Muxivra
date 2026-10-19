@@ -10,4 +10,11 @@ describe('共享参数生成',()=>{
   it('复制轨道时不生成编码与滤镜参数',()=>{const plan=buildPlan(engine,media,'C:\\out\\a.mkv',{...defaultOptions,container:'mkv',video:'copy',audio:'copy',subtitles:'copy'});expect(plan.args).not.toContain('-vf');expect(plan.args).not.toContain('-crf');expect(plan.args).toContain('-c:s')})
   it('拒绝音频容器的视频与音频编码不兼容组合',()=>{expect(()=>buildPlan(engine,media,'C:\\out\\a.mp3',{...defaultOptions,container:'mp3',video:'none'})).toThrow('MP3');expect(()=>buildPlan(engine,media,'C:\\out\\a.m4a',{...defaultOptions,container:'m4a'})).toThrow('关闭视频')})
   it('字幕提取选择恰好一条文本轨',()=>{const plan=buildPlan(engine,media,'C:\\out\\a.srt',{...defaultOptions,container:'srt',video:'none',audio:'none',subtitles:'copy',streamIndices:[2]});expect(plan.args).toContain('0:2');expect(plan.args).toContain('srt');expect(()=>buildPlan(engine,{...media,streams:[]},'C:\\out\\a.srt',{...defaultOptions,container:'srt'})).toThrow('一条')})
+  it('封装外部 ASS 不强制将保留的图像字幕转成文本',()=>{
+    const input={...media,streams:[...media.streams.slice(0,2),{index:2,type:'subtitle',codec:'hdmv_pgs_subtitle'},{index:3,type:'subtitle',codec:'mov_text'}]}
+    const plan=buildPlan({...engine,encoders:[...engine.encoders,'ass']},input,'C:\\out\\a.mkv',{...defaultOptions,container:'mkv',video:'copy',audio:'copy',subtitles:'copy',subtitleFile:'C:\\media\\edited.ass',subtitleMode:'embed'})
+    expect(plan.args.slice(plan.args.indexOf('-c:s'),plan.args.indexOf('-c:s')+2)).toEqual(['-c:s','copy'])
+    expect(plan.args.slice(plan.args.indexOf('-c:s:1'),plan.args.indexOf('-c:s:1')+2)).toEqual(['-c:s:1','ass'])
+    expect(plan.args.slice(plan.args.indexOf('-c:s:2'),plan.args.indexOf('-c:s:2')+2)).toEqual(['-c:s:2','ass']);expect(plan.args).not.toContain('-c:s:0')
+  })
 })

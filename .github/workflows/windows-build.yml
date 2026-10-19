@@ -1,0 +1,135 @@
+name: Windows build and verification
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Ref to build (empty uses the caller checkout)
+        type: string
+        default: ''
+      release-tag:
+        description: Stable tag to validate before building a release
+        type: string
+        default: ''
+    outputs:
+      version:
+        value: ${{ jobs.windows.outputs.version }}
+      artifact:
+        value: ${{ jobs.windows.outputs.artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: windows-x64-${{ github.run_id }}-${{ github.run_attempt }}
+    env:
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify version and release ref
+        id: version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json
+          $version = $package.version
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Expected a stable semantic version.' }
+          $shared = [regex]::Match((Get-Content src/shared/version.ts -Raw), "APP_VERSION\s*=\s*['`"]([^'`"]+)['`"]").Groups[1].Value
+          if ($shared -ne $version -or $lock.version -ne $version -or $lock.packages.''.version -ne $version) { throw 'Application and lockfile versions must match.' }
+          if ($env:RELEASE_TAG) {
+            if ($env:GITHUB_REPOSITORY -ne 'MaidTendouAris/Muxivra') { throw 'Publication is restricted to the official repository.' }
+            if ($env:RELEASE_TAG -cne "v$version") { throw 'Release tag must match package.json.' }
+            git show-ref --verify "refs/tags/$env:RELEASE_TAG"
+            if ($LASTEXITCODE -ne 0) { throw 'The stable tag must already exist.' }
+            $tagCommit = git rev-list -n 1 $env:RELEASE_TAG
+            $headCommit = git rev-parse HEAD
+            if ($tagCommit -ne $headCommit) { throw 'Checkout differs from the release tag.' }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install locked dependencies
+        run: |
+          npm install --global npm@11
+          if ($LASTEXITCODE -ne 0) { throw 'npm preparation failed.' }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+
+      - name: Prepare checksummed FFmpeg for integration tests
+        run: ./scripts/prepare-ci-ffmpeg.ps1
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Verify native ASR adapter without downloading models
+        run: python scripts/asr-adapter-test.py
+
+      - name: Run FFmpeg and workflow integration tests
+        run: npm run test:integration
+
+      - name: Build portable ZIP and NSIS installer
+        run: npm run package:win
+
+      - name: Verify packaged application
+        env:
+          MUXIVRA_PACKAGE_DIR: release/win-unpacked
+          MUXIVRA_RELEASE_DIR: release
+        run: node scripts/package-check.mjs
+
+      - name: Verify portable archive and release metadata
+        run: node scripts/verify-release.mjs
+
+      - name: Verify installer preserves user files
+        run: node scripts/installer-preservation-smoke.mjs
+
+      - name: Upload verified distribution files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/Muxivra-${{ steps.version.outputs.version }}-win-x64-setup.exe
+            release/Muxivra-${{ steps.version.outputs.version }}-win-x64-portable.zip
+            release/latest.yml
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/qa/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Build summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          "## Muxivra $env:VERSION · Windows x64" >> $env:GITHUB_STEP_SUMMARY
+          "Validated portable ZIP, NSIS EXE, updater metadata, FFmpeg integration and installer data preservation." >> $env:GITHUB_STEP_SUMMARY
+          Get-Content artifacts/qa/release-contents.json >> $env:GITHUB_STEP_SUMMARY

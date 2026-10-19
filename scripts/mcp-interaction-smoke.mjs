@@ -27,7 +27,7 @@ try{
   const base=await page.evaluate(()=>window.muxivra.snapshot())
   await page.evaluate(settings=>window.muxivra.saveSettings(settings),{...base.settings,theme:'light',mcp:{...base.settings.mcp,enabled:true,port,allowSubmit:false,inputRoots:[]}})
   let snapshot=await page.evaluate(()=>window.muxivra.snapshot());await connect(snapshot)
-  assert.ok(client.getInstructions().includes('request_directory_access'));assert.equal((await client.listTools()).tools.length,20);assert.ok(!(await client.listTools()).tools.some(tool=>/approv|review/.test(tool.name)))
+  assert.ok(client.getInstructions().includes('request_directory_access'));assert.equal((await client.listTools()).tools.length,23);assert.ok(!(await client.listTools()).tools.some(tool=>/approv|review/.test(tool.name)))
   assert.equal((await client.callTool({name:'list_media_files',arguments:{directory:media}})).isError,true)
   const args={path:media,permission:'input',reason:'读取用户选择的测试音乐与视频',requestKey:'directory-once'},directory=await call('request_directory_access',args)
   assert.equal(directory.status,'pending');assert.deepEqual((await page.evaluate(()=>window.muxivra.snapshot())).settings.mcp.inputRoots,[])

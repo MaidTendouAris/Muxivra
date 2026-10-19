@@ -46,8 +46,8 @@ try {
   client=new Client({name:'muxivra-setup-verification',version:'1.0'})
   await client.connect(new StreamableHTTPClientTransport(new URL(saved.mcp.url),{requestInit:{headers:{Authorization:`Bearer ${saved.settings.mcp.token}`}}}))
   const context=client.getInstructions();assert.ok(context.includes(JSON.stringify(saved.defaultMcpOutputPath)));assert.ok(context.includes(JSON.stringify(root)));assert.ok(context.includes('read_skill(goals)'));assert.ok(!context.includes(saved.settings.mcp.token));report.connectionContextProvidesDirectories=true
-  const tools=(await client.listTools()).tools;assert.equal(tools.length,20)
-  const catalog=JSON.parse((await client.callTool({name:'list_skills',arguments:{}})).content[0].text);assert.equal(catalog.length,7)
+  const tools=(await client.listTools()).tools;assert.equal(tools.length,23)
+  const catalog=JSON.parse((await client.callTool({name:'list_skills',arguments:{}})).content[0].text);assert.equal(catalog.length,8)
   for(const skill of catalog){const document=await client.callTool({name:'read_skill',arguments:{id:skill.id}});assert.equal(document.isError,undefined);assert.ok(JSON.parse(document.content[0].text).markdown.includes('name: muxivra-'))}
   const audio=JSON.parse((await client.callTool({name:'read_skill',arguments:{id:'audio'}})).content[0].text)
   const request=JSON.parse(audio.markdown.match(/```json\s+([\s\S]+?)```/)[1]);request.inputPath=input;request.outputPath=join(saved.defaultMcpOutputPath,`${root.split(sep).at(-1)}-guide-audio.m4a`)

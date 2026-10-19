@@ -31,6 +31,11 @@ class Driver extends EventEmitter implements UpdateDriver {
 }
 
 describe('应用更新控制器', () => {
+  it('禁用自动检查后仍可手动检查',async()=>{
+    const driver=new Driver(),updates=new AppUpdates(driver,'0.17.0')
+    await updates.startup(false);expect(driver.checks).toBe(0);expect(updates.state.message).toContain('自动检查已关闭');await updates.startup(true);expect(driver.checks).toBe(0)
+    const manual=updates.check();await Promise.resolve();expect(driver.checks).toBe(1);driver.current();await manual;expect(updates.state.phase).toBe('current')
+  })
   it('开发环境禁用更新，检查启动不会访问更新源', async () => {
     const updates = new AppUpdates(undefined, '0.13.0', '开发环境不检查更新')
     expect(updates.state.phase).toBe('disabled')

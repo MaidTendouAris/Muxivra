@@ -1,3 +1,4 @@
+import { createProject } from './gui-projects.mjs'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
@@ -151,12 +152,9 @@ try {
 
   // Prove the real renderer shutdown saves a pending ASS edit before invoking
   // the safe fixture's quitAndInstall. All source files are temporary fixtures.
-  const audio = join(root, 'update-subtitle.wav'), project = join(root, 'update-subtitle.ass')
+  const audio = join(root, 'update-subtitle.wav')
   await promisify(execFile)('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '2', audio], { windowsHide: true })
-  await page.locator('.navigation').getByRole('button', { name: '字幕编辑', exact: true }).click()
-  await desktop.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }) }, audio)
-  await page.getByRole('button', { name: '载入媒体', exact: true }).click()
-  await poll(() => page.evaluate(() => window.muxivra.getSession()), document => document?.mediaPath === audio, 'Subtitle project was not opened')
+  const created=await createProject(page,desktop,audio),project=created.subtitlePath
   await page.getByRole('button', { name: '新增字幕', exact: true }).click()
   await page.getByLabel('字幕文本', { exact: true }).fill('更新前保存的字幕')
   await page.waitForTimeout(250)
@@ -166,7 +164,7 @@ try {
   })
   for (const box of [subtitleGeometry.preview, subtitleGeometry.list, subtitleGeometry.editor, subtitleGeometry.footer]) assert.ok(box.top >= 0 && box.bottom <= subtitleGeometry.height, `Update banner overlaps subtitle workspace: ${JSON.stringify(subtitleGeometry)}`)
   assert.ok(subtitleGeometry.preview.top >= subtitleGeometry.banner.bottom)
-  assert.ok(subtitleGeometry.footer.top >= subtitleGeometry.list.bottom - 2)
+  assert.ok(subtitleGeometry.footer.left >= subtitleGeometry.list.right - 2)
   report.updateBannerRetainsSubtitleWorkspace = subtitleGeometry
   await page.screenshot({ path: 'artifacts/qa/app-update-subtitle-minimum.png' })
   // Use the global update banner to restart from the currently active editor.

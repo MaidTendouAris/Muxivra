@@ -1,7 +1,9 @@
 node_modules/
+/asr/
 out/
 release/
 .test-data/
+tests/media/
 .runtime/
 resources/mpv/
 coverage/
@@ -13,3 +15,8 @@ example_media/
 *.tsbuildinfo
 
 outputs/
+
+projects/
+
+__pycache__/
+*.pyc

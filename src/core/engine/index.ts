@@ -8,6 +8,7 @@ import yauzl from 'yauzl'
 import type { Engine, DownloadState } from '../../shared/types'
 import { run } from './process'
 import { exists, isWithin, localPath } from '../media/paths'
+import { fetchDownload,explainDownloadError } from '../download-network'
 
 export const engineManifest = {
   id: 'gyan-9.0.2-essentials-win-x64', version: '9.0.2', platform: 'win32', arch: 'x64', license: 'GPL-3.0-or-later',
@@ -26,7 +27,9 @@ export async function verifyEngine(ffmpegPath: string, source: Engine['source'])
   if (/--enable-nonfree\b/.test(versionText)) throw new Error('不支持使用 --enable-nonfree 的构建，请选择可再分发的 FFmpeg')
   const version = /^ffmpeg version (\S+)/m.exec(versionText)?.[1]
   if (!version || /^ffprobe version (\S+)/m.exec(probeText)?.[1] !== version) throw new Error('FFmpeg 与 ffprobe 版本不匹配，请选择同一构建目录')
-  return { id: createHash('sha256').update(executable + version).digest('hex').slice(0, 16), ffmpegPath: executable, ffprobePath: probe, version, source,
+  const gpl=/--enable-gpl\b/.test(versionText),v3=/--enable-version3\b/.test(versionText)
+  const license=gpl?(v3?'GPL-3.0-or-later':'GPL-2.0-or-later'):(v3?'LGPL-3.0-or-later':'LGPL-2.1-or-later')
+  return { license,id: createHash('sha256').update(executable + version).digest('hex').slice(0, 16), ffmpegPath: executable, ffprobePath: probe, version, source,
     encoders: capabilities(encoders, 6), decoders: capabilities(decoders, 6), filters: capabilities(filters, 3), encoderKinds:Object.fromEntries(encoders.split(/\r?\n/).flatMap(line=>{const m=/^\s*([VAS])[A-Z.]{5}\s+(\w+)\s/.exec(line);return m?[[m[2],m[1]==='V'?'video':m[1]==='A'?'audio':'subtitle']]:[]})), detectedAt: new Date().toISOString() }
 }
 export async function detectEngine(): Promise<Engine | undefined> {
@@ -38,7 +41,7 @@ export async function detectEngine(): Promise<Engine | undefined> {
   }
   return undefined
 }
-async function extractZip(zipPath: string, destination: string): Promise<void> {
+export async function extractZip(zipPath: string, destination: string, maxExpandedBytes=1024**3): Promise<void> {
   await mkdir(destination, { recursive: true })
   return new Promise((resolvePromise, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (error, zip) => {
@@ -50,7 +53,7 @@ async function extractZip(zipPath: string, destination: string): Promise<void> {
         try {
           const target = resolve(destination, entry.fileName)
           expanded += entry.uncompressedSize
-          if (!isWithin(destination, target) || isAbsolute(entry.fileName) || expanded > 1024 * 1024 * 1024 || ((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000) throw new Error('压缩包路径或大小不合法')
+          if (!isWithin(destination, target) || isAbsolute(entry.fileName) || expanded > maxExpandedBytes || ((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000) throw new Error('压缩包路径或大小不合法')
           if (entry.fileName.endsWith('/')) { await mkdir(target, { recursive: true }); zip.readEntry(); return }
           await mkdir(dirname(target), { recursive: true })
           zip.openReadStream(entry, async (streamError, stream) => {
@@ -71,7 +74,7 @@ export async function installEngine(root: string, update: (state: DownloadState)
   await mkdir(staging, { recursive: true })
   try {
     update({ state: 'downloading', percent: 0, message: '正在下载 Gyan 9.0.2' })
-    const response = await fetch(engineManifest.url, { signal: signal ? AbortSignal.any([signal,AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000) })
+    const response = await fetchDownload(engineManifest.url,{signal:signal??new AbortController().signal,label:'FFmpeg 引擎下载',timeoutMs:600000,onRetry:message=>update({state:'downloading',percent:0,message})})
     if (!response.ok || !response.body) throw new Error(`下载失败：HTTP ${response.status}`)
     const total = Number(response.headers.get('content-length') ?? 0)
     let bytes = 0
@@ -99,7 +102,7 @@ export async function installEngine(root: string, update: (state: DownloadState)
       }
     }
     return await verifyEngine(join(target, 'ffmpeg-9.0.2-essentials_build', 'bin', 'ffmpeg.exe'), 'managed')
-  } finally {
+  } catch(error){throw explainDownloadError(error,engineManifest.url,'FFmpeg 引擎下载')} finally {
     if (!isWithin(root, staging) || !staging.startsWith(join(root, '.download-'))) throw new Error('拒绝清理目录边界外的路径')
     await rm(staging, { recursive: true, force: true })
   }

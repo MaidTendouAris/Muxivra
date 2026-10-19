@@ -1,6 +1,15 @@
+import { translateUi } from '../shared/i18n'
+import { resolveUiLocale } from '../shared/locale'
+import type { OpenDialogOptions,SaveDialogOptions } from 'electron'
+import { asrRecognitionSchema,asrBackends } from '../shared/asr'
+import { asrEnvironmentRequestSchema } from '../shared/asr-environments'
+import { asrAssetIdSchema } from '../shared/asr-catalog'
+import { asrDeploymentRequestSchema } from '../shared/asr-deployment'
+import { initializeDownloadNetworking } from './download-network'
+import { checkDownloadNetwork } from '../core/download-network'
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Tray, Menu, nativeImage, clipboard, session } from 'electron'
 import { join, dirname, resolve, basename, extname } from 'node:path'
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat,mkdir } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { MediaService } from '../core/service'
 import { McpHost } from '../mcp/server'
@@ -17,10 +26,12 @@ import { buildMcpConnectionPrompt } from '../shared/mcp-connection'
 import { APP_VERSION } from '../shared/version'
 import { defaultShortcuts } from '../shared/shortcuts'
 import { SubtitleProjectLocationError } from '../core/subtitles/project'
+import { projectImportSchema,projectVideoExportSchema } from '../shared/projects'
 import type { SubtitleDocument } from '../shared/types'
 import { AppUpdates } from './app-updater'
 import { UpdateFixture } from './update-fixture'
 import { GuardedNsisUpdater } from './nsis-updater'
+import { SubtitleEditorBridge } from './subtitle-editor-bridge'
 
 app.setName('Muxivra')
 protocol.registerSchemesAsPrivileged([{ scheme: 'muxivra', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
@@ -32,7 +43,15 @@ let quitting = false, exitInProgress = false, firstHide = true
 let exitPrompt: ExitPrompt | undefined
 let appUpdates: AppUpdates
 let runtimeStopped=false
+let subtitleEditorBridge:SubtitleEditorBridge
 const engineGrants = new Set<string>()
+const mainLocale=()=>resolveUiLocale(service?.settings.language??'system',service?.systemLanguages??app.getPreferredSystemLanguages())
+const ui=(text:string,...values:unknown[])=>translateUi(text,mainLocale(),...values)
+const dialogOptions=<T extends OpenDialogOptions|SaveDialogOptions>(options:T):T=>({...options,title:options.title?ui(options.title):undefined,buttonLabel:options.buttonLabel?ui(options.buttonLabel):undefined,filters:options.filters?.map(filter=>({...filter,name:ui(filter.name)}))})
+const openDialog=(options:OpenDialogOptions)=>dialog.showOpenDialog(window!,dialogOptions(options))
+const saveDialog=(options:SaveDialogOptions)=>dialog.showSaveDialog(window!,dialogOptions(options))
+let trayLanguage=''
+function localizeTray(){if(!tray||trayLanguage===mainLocale())return;trayLanguage=mainLocale();tray.setToolTip(ui('Muxivra · 本地媒体工作台'));tray.setContextMenu(Menu.buildFromTemplate([{label:ui('打开 Muxivra'),click:()=>{window?.show();window?.focus()}},{type:'separator'},{label:ui('退出应用'),click:()=>{void requestExit()}}]))}
 const devUrl = process.env.ELECTRON_RENDERER_URL
 const rendererRoot = resolve(__dirname,'../renderer')
 
@@ -40,6 +59,7 @@ async function createWindow(): Promise<void> {
   window = new BrowserWindow({ width: 1380, height: 910, minWidth: 1040, minHeight: 720, backgroundColor: '#0c0d10', title: 'Muxivra', autoHideMenuBar: true,
     icon: join(app.getAppPath(),'resources/icon.ico'), webPreferences: { preload: join(__dirname,'../preload/index.js'), contextIsolation: true, sandbox: true, nodeIntegration: false } })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  subtitleEditorBridge=new SubtitleEditorBridge(()=>window);service.mcpSubtitles.access=subtitleEditorBridge
   window.webContents.on('will-navigate',event => event.preventDefault())
   players=new MpvPlayers(window,service,service.settings.shortcuts)
   players.on('state',state=>{if(window&&!window.isDestroyed())window.webContents.send('muxivra:player-state',state)})
@@ -56,7 +76,7 @@ async function createWindow(): Promise<void> {
     event.preventDefault(); window?.hide()
     if (firstHide && tray && process.env.MUXIVRA_SMOKE !== '1') { firstHide = false; tray.displayBalloon({ title: 'Muxivra 仍在运行', content: '任务与 MCP 服务继续运行。双击托盘图标可打开；从托盘菜单退出应用。' }) }
   })
-  window.on('closed',() => { window = undefined })
+  window.on('closed',() => { subtitleEditorBridge.close();window = undefined })
   if (devUrl) await window.loadURL(devUrl)
   else await window.loadURL('muxivra://app/index.html')
 }
@@ -100,7 +120,7 @@ async function finishExit():Promise<void> {
 }
 async function takeScreenshot(owner:PlayerOwner):Promise<string|undefined>{
   const state=players.state(owner)
-  const selected=await dialog.showSaveDialog(window!,{title:'保存截图',defaultPath:`${(state.title||'screenshot').replace(/[<>:"/\\|?*]/g,'_')}-${Math.floor(state.positionMs)}.png`,filters:[{name:'PNG 图片',extensions:['png']}]})
+  const selected=await saveDialog({title:'保存截图',defaultPath:`${(state.title||'screenshot').replace(/[<>:"/\\|?*]/g,'_')}-${Math.floor(state.positionMs)}.png`,filters:[{name:'PNG 图片',extensions:['png']}]})
   if(!selected.filePath)return
   await service.paths.grantDirectory(dirname(selected.filePath));return players.screenshot(owner,selected.filePath)
 }
@@ -111,7 +131,42 @@ function registerIpc(): void {
     return callback(...args)
   })
   handle('snapshot',() => service.snapshot())
+  handle('subtitleEditorReply',reply=>{if(!reply||typeof reply!=='object'||!z.string().uuid().safeParse(reply.id).success)throw new Error('字幕回复无效');subtitleEditorBridge.reply(reply)})
+  handle('asrImport',async input=>{
+    const request=z.object({name:z.string().max(200),backend:z.enum(asrBackends),runtimeId:z.string().max(100).optional(),environmentId:z.string().uuid().optional()}).strict().parse(input)
+    const selected=await openDialog({title:request.backend==='custom'?'导入 ASR 后端配置':request.backend==='whisper.cpp'?'导入 whisper.cpp 模型':'选择完整 ASR 模型目录',properties:request.backend==='custom'||request.backend==='whisper.cpp'?['openFile']:['openDirectory'],filters:request.backend==='custom'?[{name:'Muxivra ASR 后端',extensions:['json']}]:[{name:'Whisper GGML 模型',extensions:['bin']}]})
+    if(!selected.filePaths[0])return
+    let executable:string|undefined
+    if(request.backend==='whisper.cpp'){
+      if(request.runtimeId)executable=service.asrModels.runtime(request.runtimeId)
+      else{const runtime=await openDialog({title:'选择 whisper-cli.exe（同目录需保留运行库）',properties:['openFile'],filters:[{name:'whisper.cpp 程序',extensions:['exe']}]});if(!runtime.filePaths[0])return;executable=runtime.filePaths[0]}
+    }
+    return service.asrImport({...request,modelPath:selected.filePaths[0],executable})
+  })
+  const environmentInUse=(id:string)=>service.queue.jobs.some(j=>j.plan.kind==='asr'&&j.plan.asr.model.environment?.id===id&&['queued','running','paused'].includes(j.status))
+  handle('asrSaveRecognition',(id,config)=>service.asrModels.saveRecognition(z.string().uuid().parse(id),asrRecognitionSchema.parse(config)))
+  handle('asrSaveEnvironment',request=>{request=asrEnvironmentRequestSchema.parse(request);if(request.id&&environmentInUse(request.id))throw new Error('此环境有未完成任务，请完成或取消后再修改');return service.asrModels.saveEnvironment(request)})
+  handle('asrRefreshEnvironment',id=>service.asrModels.refreshEnvironment(z.string().uuid().parse(id)))
+  handle('asrDiscoverPython',()=>service.asrModels.discoverEnvironments())
+  handle('asrDownloadModel',id=>{id=asrAssetIdSchema.parse(id);if(service.asrModels.state().download.active)throw new Error('已有模型操作正在进行');void service.asrModels.downloadModel(id).catch(()=>{})})
+  handle('asrBindAsset',(id,environmentId,runtimeId)=>service.asrModels.bindAsset(z.string().min(1).max(100).parse(id),z.string().uuid().optional().parse(environmentId),z.string().max(100).optional().parse(runtimeId)))
+  handle('asrStoreModel',id=>{id=z.string().uuid().parse(id);if(service.queue.jobs.some(j=>j.plan.kind==='asr'&&j.plan.asr.model.id===id&&['queued','running','paused'].includes(j.status)))throw new Error('模型有未完成任务，请先完成或取消');return service.asrModels.storeModel(id)})
+  handle('asrImportComponent',async role=>{role=z.literal('aligner').parse(role);const selected=await openDialog({title:'导入对齐模型',properties:['openDirectory']});if(!selected.filePaths[0])return;return service.asrModels.importComponent(selected.filePaths[0],role)})
+  handle('asrRemoveEnvironment',id=>{id=z.string().uuid().parse(id);if(environmentInUse(id))throw new Error('此环境有未完成任务');return service.asrModels.removeEnvironment(id)})
+  handle('asrSelectPath',async kind=>{kind=z.enum(['python','folder']).parse(kind);const selected=await openDialog({title:kind==='python'?'选择 Python 可执行文件':'选择目录',properties:kind==='python'?['openFile']:['openDirectory'],...(kind==='python'?{filters:[{name:'Python',extensions:['exe']}]}:{})});return selected.filePaths[0]})
+  handle('asrRemoveModel',async id=>{id=z.string().uuid().parse(id);if(service.queue.jobs.some(j=>j.plan.kind==='asr'&&j.plan.asr.model.id===id&&['queued','running','paused'].includes(j.status)))throw new Error('该模型仍有未完成任务，请先取消任务');await service.asrModels.remove(id)})
+  handle('asrDownload',(kind,runtime)=>{kind=z.enum(['model','runtime']).parse(kind);runtime=z.enum(['cpu','cuda']).default('cpu').parse(runtime);if(service.asrModels.state().download.active)throw new Error('已有 ASR 下载正在进行');void service.asrModels.install(kind,runtime).catch(()=>{})})
+  handle('asrCancelDownload',()=>service.asrModels.cancelDownload())
+  handle('asrDetectNvidia',()=>service.asrModels.detectNvidia())
+  handle('asrDeployNvidia',request=>{const parsed=asrDeploymentRequestSchema.parse(request);void service.asrModels.deployNvidia(parsed).catch(()=>{})})
+  handle('asrCancelDeployment',()=>service.asrModels.cancelDeployment())
+  handle('asrDeploymentLog',()=>service.asrModels.deploymentLog())
+  handle('asrCheckNetwork',()=>checkDownloadNetwork())
+  handle('asrSubmit',options=>service.asrSubmit(options))
+  handle('asrResult',id=>service.asrResult(z.string().uuid().parse(id)))
+  handle('asrRaw',(id,index)=>service.asrRaw(z.string().uuid().parse(id),z.number().int().min(0).max(100000).parse(index)))
   handle('appUpdateState',()=>appUpdates.state)
+  handle('openAppLink',kind=>{const urls={repository:'https://github.com/MaidTendouAris/Muxivra',issues:'https://github.com/MaidTendouAris/Muxivra/issues',releases:'https://github.com/MaidTendouAris/Muxivra/releases'};return shell.openExternal(urls[z.enum(['repository','issues','releases']).parse(kind)])})
   handle('checkAppUpdate',()=>appUpdates.check())
   handle('downloadAppUpdate',()=>appUpdates.download())
   handle('installAppUpdate',()=>{
@@ -135,12 +190,12 @@ function registerIpc(): void {
   })
   handle('selectFiles',async (kind,multiple) => {
     z.enum(['media','subtitle','subtitle-burn']).parse(kind); z.boolean().optional().parse(multiple)
-    const selected = await dialog.showOpenDialog(window!,{ properties: multiple ? ['openFile','multiSelections'] : ['openFile'], filters: kind === 'subtitle' ? [{ name: '字幕', extensions: ['srt','ass','ssa'] }] : kind==='subtitle-burn'?[{name:'烧录字幕',extensions:['srt','ass','ssa']}]:[{ name: '媒体文件', extensions: ['mp4','mkv','mov','avi','webm','m4v','m4a','mp3','wav','flac','ogg','aac','ts','png','jpg','webp','gif'] },{ name: '所有文件', extensions: ['*'] }] })
+    const selected = await openDialog({ properties: multiple ? ['openFile','multiSelections'] : ['openFile'], filters: kind === 'subtitle' ? [{ name: '字幕', extensions: ['srt','ass','ssa'] }] : kind==='subtitle-burn'?[{name:'烧录字幕',extensions:['srt','ass','ssa']}]:[{ name: '媒体文件', extensions: ['mp4','mkv','mov','avi','webm','m4v','m4a','mp3','wav','flac','ogg','aac','ts','png','jpg','webp','gif'] },{ name: '所有文件', extensions: ['*'] }] })
     return Promise.all(selected.filePaths.map(path => service.paths.grantFile(path)))
   })
   handle('selectDirectory',async purpose => {
     z.enum(['output','engine','mcp-input','mcp-output']).parse(purpose)
-    const selected = await dialog.showOpenDialog(window!,{ title: purpose === 'engine' ? '选择包含 ffmpeg.exe 和 ffprobe.exe 的 bin 目录' : '选择目录', properties: ['openDirectory'] })
+    const selected = await openDialog({ title: purpose === 'engine' ? '选择包含 ffmpeg.exe 和 ffprobe.exe 的 bin 目录' : '选择目录', properties: ['openDirectory'] })
     if (!selected.filePaths[0]) return undefined
     const path = await service.paths.grantDirectory(selected.filePaths[0]); if (purpose === 'engine') engineGrants.add(path); return path
   })
@@ -160,37 +215,47 @@ function registerIpc(): void {
   handle('downloadEngine',() => service.downloadEngine())
   handle('saveSettings',settings => service.saveSettings(settings)); handle('savePreset',preset => service.savePreset(preset)); handle('deletePreset',id => service.deletePreset(z.string().parse(id)))
   handle('componentCapabilities',(kind,name)=>service.componentCapabilities(z.enum(['videoEncoder','audioEncoder','filter']).parse(kind),z.string().regex(/^[a-zA-Z0-9_]{1,80}$/).parse(name)))
-  handle('importPresets',async()=>{const selected=await dialog.showOpenDialog(window!,{title:'导入预设',properties:['openFile'],filters:[{name:'Muxivra 预设',extensions:['json']}]});if(!selected.filePaths[0])return;return service.importPresetFile(await service.paths.grantFile(selected.filePaths[0]))})
-  handle('exportPresets',async ids=>{z.array(z.string()).min(1).max(200).parse(ids);const selected=await dialog.showSaveDialog(window!,{title:'导出预设',defaultPath:'muxivra-presets.json',filters:[{name:'Muxivra 预设',extensions:['json']}]});if(!selected.filePath)return;await service.paths.grantDirectory(dirname(selected.filePath));await service.exportPresetFile(ids,selected.filePath);return selected.filePath})
-  const openSubtitleProject = async (path: string, media: boolean) => {
-    pathSchema.parse(path)
-    const load = (target?: string) => media ? service.openSubtitleMedia(path, target) : service.readSubtitles(path, target)
-    try { return await load() } catch (error) {
-      if (!(error instanceof SubtitleProjectLocationError)) throw error
-      const selected = await dialog.showSaveDialog(window!, { title: '选择 ASS 工程保存位置', defaultPath: basename(error.suggestedPath), filters: [{ name: 'ASS 工程', extensions: ['ass'] }] })
-      if (!selected.filePath) return
-      await service.paths.grantDirectory(dirname(selected.filePath)); return load(selected.filePath)
-    }
+  handle('importPresets',async()=>{const selected=await openDialog({title:'导入预设',properties:['openFile'],filters:[{name:'Muxivra 预设',extensions:['json']}]});if(!selected.filePaths[0])return;return service.importPresetFile(await service.paths.grantFile(selected.filePaths[0]))})
+  handle('exportPresets',async ids=>{z.array(z.string()).min(1).max(200).parse(ids);const selected=await saveDialog({title:'导出预设',defaultPath:'muxivra-presets.json',filters:[{name:'Muxivra 预设',extensions:['json']}]});if(!selected.filePath)return;await service.paths.grantDirectory(dirname(selected.filePath));await service.exportPresetFile(ids,selected.filePath);return selected.filePath})
+  const archiveProject=async(id:string)=>{
+    id=z.string().uuid().parse(id);const project=service.projects.get(id)
+    if(service.queue.jobs.some(j=>j.plan.projectId===id&&['queued','running','paused'].includes(j.status)))throw new Error('项目仍有未结束任务，请先取消或完成任务')
+    await players.releaseProject(project.directory)
+    return service.archiveProject(id)
   }
-  const saveSubtitleAs = async (document: SubtitleDocument) => {
-    const doc = subtitleSchema.parse(document)
-    const selected = await dialog.showSaveDialog(window!, { title: 'ASS 工程另存为', defaultPath: doc.projectPath ? doc.projectPath.replace(/\.ass$/i, '-copy.ass') : 'subtitles.ass', filters: [{ name: 'ASS 工程', extensions: ['ass'] }] })
-    if (!selected.filePath) return
-    await service.paths.grantDirectory(dirname(selected.filePath)); return service.saveSubtitleProjectAs(doc, selected.filePath)
-  }
-  handle('readSubtitles',path => openSubtitleProject(path,false)); handle('openSubtitleMedia',path=>openSubtitleProject(path,true))
+  handle('importProject',request=>service.importProject(projectImportSchema.parse(request)))
+  handle('cancelProjectImport',()=>service.projects.cancelImport())
+  handle('openProject',id=>service.openProject(z.string().uuid().parse(id)))
+  handle('closeProject',async id=>{id=z.string().uuid().parse(id);if(service.projects.state().activeId!==id)return;await players.releaseProject(service.projects.get(id).directory);await service.closeProject(id)})
+  handle('renameProject',(id,name)=>service.projects.rename(z.string().uuid().parse(id),z.string().trim().min(1).max(150).parse(name)))
+  handle('archiveProject',archiveProject)
+  handle('restoreProject',id=>service.projects.restore(z.string().uuid().parse(id)))
+  handle('duplicateProject',()=>service.duplicateProject())
+  handle('selectProjectSubtitle',(projectId,id)=>service.projects.selectSubtitle(z.string().uuid().parse(projectId),z.string().uuid().parse(id)))
+  handle('createProjectSubtitle',(projectId,name)=>service.projects.createSubtitle(z.string().uuid().parse(projectId),z.string().trim().min(1).max(180).optional().parse(name)))
+  handle('renameProjectSubtitle',(projectId,id,name)=>service.projects.renameSubtitle(z.string().uuid().parse(projectId),z.string().uuid().parse(id),z.string().trim().min(1).max(180).parse(name)))
+  handle('deleteProjectSubtitle',(projectId,id)=>service.projects.deleteSubtitle(z.string().uuid().parse(projectId),z.string().uuid().parse(id)))
+  handle('exportProjectVideo',async input=>{
+    const request=projectVideoExportSchema.parse(input),project=service.projects.active();if(!project)throw new Error('请先打开项目')
+    const directory=join(project.directory,'exports');await mkdir(directory,{recursive:true})
+    const selected=await saveDialog({title:request.mode==='burn'?'导出烧录字幕视频':'导出字幕封装视频',defaultPath:join(directory,`${basename(project.mediaPath,extname(project.mediaPath))}-${request.mode}.${request.container}`),filters:[{name:request.container.toUpperCase(),extensions:[request.container]}]})
+    if(!selected.filePath)return;await service.paths.grantDirectory(dirname(selected.filePath));return service.exportProjectVideo(request,selected.filePath)
+  })
+  handle('readSubtitles',path => service.readSubtitles(pathSchema.parse(path))); handle('openSubtitleMedia',path=>service.openSubtitleMedia(pathSchema.parse(path)))
   handle('saveSession',doc => service.saveSession(doc)); handle('getSession',() => service.getSession())
   handle('getSubtitleProjectState',()=>service.subtitleProjects.state())
-  handle('saveSubtitleProject',async doc => { if(!subtitleSchema.parse(doc).projectPath) { const result=await saveSubtitleAs(doc); if(!result)throw new Error('尚未保存 ASS 工程'); return result }; return service.saveSubtitleProject(doc) })
-  handle('saveSubtitleProjectAs',saveSubtitleAs)
-  handle('deleteSubtitleProject',id=>service.deleteSubtitleProject(z.string().uuid().parse(id)))
+  handle('saveSubtitleProject',doc=>service.saveSubtitleProject(subtitleSchema.parse(doc)))
+  handle('prepareSubtitleMedia',doc=>service.prepareSubtitleMedia(subtitleSchema.parse(doc)))
+  handle('saveSubtitleProjectAs',doc=>service.saveSubtitleProjectAs(subtitleSchema.parse(doc)))
+  handle('deleteSubtitleProject',async id=>{if(service.subtitleProjects.get()?.id!==z.string().uuid().parse(id))throw new Error('当前工程已切换');return archiveProject(service.projects.active()!.id)})
   handle('subtitleExportLosses',(doc,format)=>service.subtitleExportLosses(doc,z.enum(['ass','ssa','srt']).parse(format)))
   handle('readClipboardText',()=>clipboard.readText())
   handle('exportSubtitles',async (doc,format) => {
     format=z.enum(['ass','ssa','srt']).default('ass').parse(format)
     doc=subtitleSchema.parse(doc)
-    const base=doc.projectPath?doc.projectPath.replace(/\.ass$/i, ''):'subtitles'
-    const selected = await dialog.showSaveDialog(window!,{ title: `导出 ${format.toUpperCase()} 字幕`, defaultPath: `${base}-export.${format}`, filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }] })
+    const project=service.projects.active();const directory=project?join(project.directory,'exports'):service.defaultOutputPath!;await mkdir(directory,{recursive:true})
+    const base=join(directory,doc.projectPath?basename(doc.projectPath,'.ass'):'subtitles')
+    const selected = await saveDialog({ title: `导出 ${format.toUpperCase()} 字幕`, defaultPath: `${base}-export.${format}`, filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }] })
     if (!selected.filePath) return undefined
     if(extname(selected.filePath).toLowerCase()!==`.${format}`)throw new Error('导出文件扩展名与所选格式不一致')
     await service.paths.grantDirectory(dirname(selected.filePath)); await service.exportSubtitles(doc,selected.filePath,format); return selected.filePath
@@ -203,12 +268,13 @@ function registerIpc(): void {
   handle('playerMedia',owner=>players.media(playerOwnerSchema.parse(owner)))
   handle('playerScreenshot',owner=>takeScreenshot(playerOwnerSchema.parse(owner)))
   handle('playerSubtitles',(owner,document)=>players.subtitles(playerOwnerSchema.parse(owner),subtitleSchema.parse(document)))
-  handle('playerAddTrack',async(owner,kind)=>{owner=playerOwnerSchema.parse(owner);kind=z.enum(['audio','subtitle']).parse(kind);const selected=await dialog.showOpenDialog(window!,{title:kind==='audio'?'载入音轨':'载入字幕',properties:['openFile'],filters:[kind==='audio'?{name:'音频',extensions:['m4a','mp3','wav','flac','ogg','aac','ac3','dts']}:{name:'字幕',extensions:['srt','ass','ssa','vtt']}]});if(selected.filePaths[0])await players.addTrack(owner,await service.paths.grantFile(selected.filePaths[0]),kind)})
-  handle('waveform',path => service.waveform(path))
+  handle('playerAddTrack',async(owner,kind)=>{owner=playerOwnerSchema.parse(owner);kind=z.enum(['audio','subtitle']).parse(kind);const selected=await openDialog({title:kind==='audio'?'载入音轨':'载入字幕',properties:['openFile'],filters:[kind==='audio'?{name:'音频',extensions:['m4a','mp3','wav','flac','ogg','aac','ac3','dts']}:{name:'字幕',extensions:['srt','ass','ssa','vtt']}]});if(selected.filePaths[0])await players.addTrack(owner,await service.paths.grantFile(selected.filePaths[0]),kind)})
+  handle('waveform',(path,options) => service.waveform(path,options))
   handle('reveal',async path => {
     pathSchema.parse(path)
     const jobs = service.snapshot().jobs
-    if (!jobs.some(job => job.plan.input.path === path || job.plan.outputPath === path || job.logPath === path) && !service.paths.files.has(path) && path !== service.dataPath && path !== service.enginePath) throw new Error('路径未获授权')
+    const project=service.projects.state().items.find(p=>[p.directory,p.mediaPath,p.subtitlePath].includes(path));if(project)await service.projects.validate(project.id)
+    if (!project&&!jobs.some(job => job.plan.input.path === path || job.plan.outputPath === path || job.logPath === path) && !service.paths.files.has(path) && path !== service.dataPath && path !== service.enginePath) throw new Error('路径未获授权')
     if ((await stat(path)).isDirectory()) await shell.openPath(path); else shell.showItemInFolder(path)
   })
   handle('readLog',id => service.queue.log(z.string().uuid().parse(id)))
@@ -226,6 +292,7 @@ app.on('second-instance',() => { window?.show(); window?.focus() })
 app.on('before-quit',event => { if (!quitting && service) { event.preventDefault(); void requestExit(process.env.MUXIVRA_SMOKE === '1') } })
 app.on('window-all-closed',() => {})
 if (hasLock) void app.whenReady().then(async () => {
+  initializeDownloadNetworking()
   session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback) => callback(false))
   session.defaultSession.setPermissionCheckHandler(() => false)
   protocol.handle('muxivra',async request => {
@@ -238,7 +305,8 @@ if (hasLock) void app.whenReady().then(async () => {
   const data = app.getPath('userData')
   const engines = process.env.MUXIVRA_ENGINE_PATH ? resolve(process.env.MUXIVRA_ENGINE_PATH) : join(process.env.LOCALAPPDATA ?? app.getPath('home'),'Muxivra','engines','ffmpeg')
   const outputs = join(app.isPackaged?dirname(app.getPath('exe')):app.getAppPath(),'outputs')
-  service = new MediaService(data,engines,outputs,join(__dirname,'hardware-worker.js')); await service.initialize(); mcp = new McpHost(service)
+  const projects=process.env.MUXIVRA_SMOKE==='1'?join(data,'projects'):join(dirname(outputs),'projects')
+  service = new MediaService(data,engines,outputs,join(__dirname,'hardware-worker.js'),projects,app.isPackaged?join(process.resourcesPath,'asr','adapter.py'):join(app.getAppPath(),'resources','asr','adapter.py'),process.env.MUXIVRA_SMOKE==='1'?join(data,'installation'):undefined); service.systemLanguages=process.env.MUXIVRA_SMOKE==='1'&&process.env.MUXIVRA_TEST_SYSTEM_LANGUAGES?process.env.MUXIVRA_TEST_SYSTEM_LANGUAGES.split(','):app.getPreferredSystemLanguages(); await service.initialize(); mcp = new McpHost(service)
   const testUpdates=process.env.MUXIVRA_SMOKE==='1'&&process.env.MUXIVRA_UPDATE_TEST==='1'
   const fixture=testUpdates?new UpdateFixture(()=>app.quit(),APP_VERSION):undefined
   const updater=fixture??(app.isPackaged&&process.platform==='win32'&&process.env.MUXIVRA_SMOKE!=='1'?new GuardedNsisUpdater():undefined)
@@ -262,15 +330,15 @@ if (hasLock) void app.whenReady().then(async () => {
   service.beforeSaveSettings = async settings => {await mcp.configure(settings.mcp);await players?.setShortcuts(settings.shortcuts??defaultShortcuts)}
   if (service.settings.mcp.enabled) { try { await mcp.configure(service.settings.mcp) } catch (e) { service.mcpState = { running: false, error: (e as Error).message } } }
   let updateTimer: ReturnType<typeof setTimeout> | undefined
-  service.on('update',() => { if (updateTimer) return; updateTimer = setTimeout(() => { updateTimer = undefined; if (window && !window.isDestroyed()) window.webContents.send('muxivra:update',service.snapshot()) },150) })
+  service.on('update',() => { localizeTray(); if (updateTimer) return; updateTimer = setTimeout(() => { updateTimer = undefined; if (window && !window.isDestroyed()) window.webContents.send('muxivra:update',service.snapshot()) },150) })
   registerIpc()
   tray = new Tray(nativeImage.createFromPath(join(app.getAppPath(),'resources/icon.png')).resize({ width: 32,height: 32 }))
-  tray.setToolTip('Muxivra · 本地媒体工作台'); tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开 Muxivra', click: () => { window?.show(); window?.focus() } },{ type: 'separator' },{ label: '退出应用', click: () => { void requestExit() } }]))
+  localizeTray()
   tray.on('double-click',() => { window?.show(); window?.focus() })
   await createWindow()
   // Check once per process launch, after the first window is ready. A failed
   // network request changes updater state without delaying the application.
-  void appUpdates.startup()
+  void appUpdates.startup(service.snapshot().settings.autoUpdate!==false)
   // Automated desktop checks run in an isolated profile and can exit without an interactive prompt.
   if (process.env.MUXIVRA_SMOKE === '1') ipcMain.handle('muxivra:smoke-exit',() => requestExit(true))
 }).catch(async error => { dialog.showErrorBox('Muxivra 启动失败',String(error)); quitting = true; await players?.shutdown().catch(()=>{});await mcp?.stop().catch(()=>{});await service?.shutdown().catch(() => {}); app.quit() })

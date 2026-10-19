@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { terminateChild } from '../jobs/process-control'
 
 export function run(executable: string, args: string[], options: { timeout?: number; maxBytes?: number; signal?: AbortSignal } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -19,6 +20,6 @@ export function stopProcess(child: ChildProcessWithoutNullStreams): () => void {
   if (child.exitCode !== null) return () => {}
   child.stdin.on('error', () => {})
   child.stdin.write('q\n')
-  const timer = setTimeout(() => child.kill(), 2000)
+  const timer = setTimeout(() => terminateChild(child), 2000)
   return () => clearTimeout(timer)
 }

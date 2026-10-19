@@ -17,7 +17,7 @@ try {
         $files = if ($candidate.PSIsContainer) { Get-ChildItem -LiteralPath $candidate.FullName -Recurse -File -Force } else { @($candidate) }
         foreach ($file in $files) {
             $relativePath = $file.FullName.Substring($projectRoot.Length + 1).Replace('\','/')
-            if ($relativePath.StartsWith('resources/mpv/')) { continue }
+            if ($relativePath.StartsWith('resources/mpv/') -or $relativePath.Contains('/__pycache__/') -or $relativePath.EndsWith('.pyc') -or $relativePath.StartsWith('tests/media/')) { continue }
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive,$file.FullName,$relativePath,[IO.Compression.CompressionLevel]::Optimal) | Out-Null
         }
     }

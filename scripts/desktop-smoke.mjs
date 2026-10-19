@@ -1,3 +1,4 @@
+import { createProject } from './gui-projects.mjs'
 import { _electron as electron } from 'playwright'
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { resolve, join, relative, isAbsolute, sep, dirname, basename } from 'node:path'
@@ -45,15 +46,18 @@ try {
   const playback=await page.evaluate(()=>window.muxivra.playerState('single'));if(playback.error||!playback.ready)throw new Error(`mpv failed: ${JSON.stringify(playback)}`)
   await screenshot('single-dark')
   await page.getByRole('button',{name:'批量处理',exact:true}).click();await page.getByRole('button',{name:'添加媒体文件',exact:true}).click();await page.locator('.batch-layout').getByText('desktop-input.mp4',{exact:true}).first().waitFor();await screenshot('batch-dark')
-  await page.getByRole('button',{name:'字幕编辑',exact:true}).click();await page.getByRole('button',{name:'载入媒体',exact:true}).click();await waitPlayer('subtitles',s=>s.ready&&!s.loading&&s.videoWidth===480);await page.getByRole('button',{name:'导入字幕',exact:true}).click();await page.locator('.cue-list').getByText('Desktop subtitle',{exact:true}).waitFor()
+  await desktop.evaluate(({dialog})=>{globalThis.__desktopOpenDialog=dialog.showOpenDialog})
+  await createProject(page,desktop,input,{subtitle:srt})
+  await desktop.evaluate(({dialog})=>{dialog.showOpenDialog=globalThis.__desktopOpenDialog})
+  await waitPlayer('subtitles',state=>state.ready&&!state.loading&&state.videoWidth===480);await page.locator('.subtitle-event-table').getByText('Desktop subtitle',{exact:true}).waitFor()
   await page.evaluate(()=>window.muxivra.playerAction('subtitles',{type:'seek',positionMs:0}))
-  await page.locator('.cue-list').getByText('Desktop subtitle',{exact:true}).click()
+  await page.locator('.subtitle-event-table').getByText('Desktop subtitle',{exact:true}).click()
   await page.getByLabel('时长',{exact:true}).fill('00:00:01,250');await page.getByLabel('时长',{exact:true}).press('Enter')
   if(await page.getByLabel('结束时间',{exact:true}).inputValue()!=='00:00:01,250')throw new Error('字幕时长未更新结束时间')
-  await page.getByRole('button',{name:'撤销',exact:true}).click();if(await page.getByLabel('结束时间',{exact:true}).inputValue()!=='00:00:01,500')throw new Error('一次时长修改需要多次撤销')
-  await page.getByRole('button',{name:'重做',exact:true}).click();await page.locator('.cue-text').fill('桌面编辑验证');await page.getByRole('button',{name:'导出字幕',exact:true}).click();await page.waitForTimeout(500)
+  await page.getByRole('button',{name:'展开工程栏',exact:true}).click();await page.getByRole('button',{name:'撤销',exact:true}).click();if(await page.getByLabel('结束时间',{exact:true}).inputValue()!=='00:00:01,500')throw new Error('一次时长修改需要多次撤销')
+  await page.getByRole('button',{name:'重做',exact:true}).click();await page.getByLabel('字幕文本',{exact:true}).fill('桌面编辑验证');await waitPlayer('subtitles',state=>state.tracks.some(t=>t.type==='sub'&&t.external));await page.locator('.navigation').getByRole('button',{name:'项目管理',exact:true}).click();await page.getByRole('button',{name:'项目文件',exact:true}).click();await page.getByLabel('导出格式',{exact:true}).click();await page.getByRole('option',{name:'SRT',exact:true}).click();await page.getByRole('button',{name:'导出字幕',exact:true}).click();if(await page.getByRole('dialog',{name:'导出 SRT',exact:true}).count())await page.getByRole('button',{name:'继续导出',exact:true}).click();await page.waitForTimeout(500)
   const exportedSubtitle=await readFile(join(output,'desktop-edited.srt'),'utf8');if(!exportedSubtitle.includes('桌面编辑验证')||!exportedSubtitle.includes('00:00:01,250'))throw new Error('桌面字幕导出内容或时间不匹配')
-  await waitPlayer('subtitles',s=>s.tracks.some(t=>t.type==='sub'&&t.external));const editorSubs=(await page.evaluate(()=>window.muxivra.playerState('subtitles'))).tracks.filter(t=>t.type==='sub'&&t.external);if(editorSubs.length!==1)throw new Error('编辑字幕被重复载入');await page.waitForTimeout(500);if(await page.locator('.toast-error').count())throw new Error(await page.locator('.toast-error').innerText());await screenshot('subtitles-dark')
+  await page.locator('.navigation').getByRole('button',{name:'字幕编辑',exact:true}).click();await waitPlayer('subtitles',s=>s.tracks.some(t=>t.type==='sub'&&t.external));const editorSubs=(await page.evaluate(()=>window.muxivra.playerState('subtitles'))).tracks.filter(t=>t.type==='sub'&&t.external);if(editorSubs.length!==1)throw new Error('编辑字幕被重复载入');await page.waitForTimeout(500);if(await page.locator('.toast-error').count())throw new Error(await page.locator('.toast-error').innerText());await screenshot('subtitles-dark')
   await page.getByRole('button',{name:'设置',exact:true}).click();const firstHardware=await page.evaluate(()=>window.muxivra.snapshot());assert.ok(firstHardware.hardware.detectedAt);assert.ok((await readFile(join(root,'profile','hardware.json'),'utf8')).includes(firstHardware.hardware.detectedAt));await page.getByRole('button',{name:'更新硬件信息',exact:true}).click();await waitSnapshot(s=>s.hardware.detectedAt!==firstHardware.hardware.detectedAt&&!s.hardwareRefreshing);await page.getByRole('button',{name:'更新硬件信息',exact:true}).waitFor();await screenshot('settings-dark')
   assert.ok((await page.locator('.hardware-summary').boundingBox()).height<300,'硬件摘要占位过大')
   await page.getByRole('combobox',{name:'界面主题',exact:true}).click();await page.locator('[role="option"][data-value="light"]').click()

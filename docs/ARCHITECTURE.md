@@ -8,6 +8,15 @@
 - `src/main/`：窗口、托盘、文件对话框、IPC 来源检查和 mpv 原生播放区域。
 - `src/core/`：引擎验证、处理计划、输出校验、JSON 存储、队列、字幕、波形和异步播放器控制通道。没有 Electron/React 依赖。
 - `src/mcp/`：官方 SDK、回环 HTTP、凭据和来源检查、工具 Schema，以及固定目录的离线指南。
+- `src/core/asr/`：模型/运行包管理、音轨预处理、whisper.cpp 与 JSONL 适配器、统一字幕初稿。`shared/asr.ts` 定义协议、校验与时间映射；“ASR 工作台”负责导入、参数和结果预览。
+
+## ASR 与字幕初稿
+
+ASR 以独立 `kind: asr` 计划接入现有持久化队列，保留转码计划的兼容性。调度器同一时间只运行一个 ASR；整段模式直接暂停/继续队列持有的子进程，兼容分片在片段边界等待。取消通过 AbortSignal 停止当前提取/推理进程并唤醒暂停等待。历史、日志、进程退出码、耗时、删除与重试沿用共用任务流程。
+
+服务在提交前验证媒体、音轨、模型和区间。FFmpeg 根据源时间轴产生选定区间的 PCM WAV，默认将整个区间一次送入后端；只有 `chunkingEnabled: true` 才按可配置 `chunkSeconds` 分片，不自动降级。适配器输出本次音频内毫秒时间，标准化后加媒体偏移，保留原始输出和检查点，删除临时音频；完成后发布独立初稿 JSON。缺少模式字段的旧队列计划按旧规则执行，经服务重试则由 schema 采用整段默认。无时间戳结果保留为文本或显式估算，进入 ASS 编辑时以注释条目标记未打轴。工程应用需用户选择追加/替换，保留样式、脚本及撤销历史。
+
+运行包与参考模型从固定官方地址按需下载，核对大小和 SHA-256，临时目录验证完成后发布；不进入安装包。自定义后端仅执行用户导入清单指定的程序，不暴露通用 shell API。首轮 GUI 提供 ASR，现有 MCP 工具没有开放模型程序导入/执行能力。协议见 [ASR 指南](ASR.md)。
 
 ## AI 接入与指南
 
@@ -29,7 +38,7 @@ shared/shortcuts.ts 定义 14 个操作、默认键、组合键校验、冲突�
 
 配置内部 shortcutsVersion=2 对旧默认起止键做一次 Q/E 迁移，存在冲突或自定义配置时保留用户值。React 以捕获阶段接收当前可见页面快捷键，按钮、复选框不抑制播放键；文字编辑控件和已展开菜单保留自身操作，音量滑条方向键仍采用 5% 步进。字幕起止操作读取主端播放器时钟，返回后核对工程与条目身份，再修改最新文档中的对应时间，避免拖动后使用旧的 renderer 通知值。
 
-字幕样式二级页保留隐藏的工作区与 MpvPlayer 实例，返回不触发 playerOpen。工作区按窗口的实际剩余高度分配，底部工程栏正常占位；预览、条目和编辑部分分别在卡片内滚动。原生播放区域更新按最新矩形串行发送，滚动时先隐藏，停止 120ms 后恢复；矩形同时裁剪窗口和 CSS overflow 祖先。固定全屏预览跳过普通祖先裁剪及后台滚动抑制，仍保留窗口和弹层裁剪。NativePlayerSurface 先定位隐藏区域，再安装最终裁剪并显示，避免恢复时短暂绘制旧区域。
+字幕与 ASR 共用 ProjectManager。安装目录 projects 下的独立目录保存媒体副本、ASS、会话恢复、备份、导入字幕、ASR 数据、日志与导出；活动项目指针和统一队列索引保存在用户配置目录。导入采用流式复制、同步、摘要验证和原文件变化检查，显式删除只在工程创建后执行。项目文件路径受受控 manifest 与恢复路径检查约束。删除前释放原生播放进程，并将目录移入 .trash；失败保留活动项目。字幕工作区使用窗口内的固定网格，预览、字幕列表和事件属性独立滚动。收起的工程栏在右列下方，展开时使用绝对定位的全宽悬浮面板，保留收起状态的网格尺寸。原生区域按滚动事件及 requestAnimationFrame 更新位置和窗口/祖先/浮动栏裁剪；全屏跳过普通卡片和后台工程栏。样式二级页保留同一播放器实例。
 
 临时 ASS 删除权限由主端保存的创建路径与文件摘要决定，renderer 不能授予删除权限；重开工程时外部替换会失去该权限。删除和缓存/保存串行，先持久化新的空工程身份，再删除确认过的 ASS，文件删除失败回滚恢复索引。旧缓存请求不能重新生成工程；源媒体、原有 ASS 和历史备份保留。
 
@@ -67,7 +76,7 @@ MCP 默认关闭，绑定 `127.0.0.1`，验证 Host、Origin（若存在）和 B
 
 配置、个人预设、任务历史和字幕会话通过临时文件 + rename 原子写入 JSON。存储损坏不会被静默覆盖；启动会明确报错，原文件保留。
 
-SubtitleProjectStore 管理可写 ASS 工程，renderer 只能修改文档内容，不能直接更换关联路径。载入媒体立即在同目录创建同名 ASS；已有则载入，不可写时由主进程对话框选择新位置。导入 SRT/SSA 转为 ASS，同名 ASS 已存在时优先载入。新文件独占发布，保存先写同目录临时文件并同步，再替换；每次变更前保留原文备份，每个工程最多 20 份。
+SubtitleProjectStore 管理当前项目内的可写 ASS，renderer 只能修改文档，不能直接改变关联路径。ProjectManager 为媒体副本建立同名 ASS，并拒绝不属于当前项目的恢复路径。导入 SRT/SSA/ASS 时复制原文件到 imports 后应用内容；媒体和原字幕不改写。新文件独占发布，保存先写同目录临时文件并同步，再原子替换；每次内容改变前保留备份，最多 20 份。复制工程可保存冲突中的恢复稿，不覆盖外部修改。
 
 编辑后 800ms 写入恢复缓存，主端每 60 秒保存 ASS；手动保存、离页和确认退出前刷新最新编辑。恢复缓存保留毫秒精度、媒体关联及工程摘要；旧 SRT 缓存转换基础文字标签。保存前和替换前核对原文件摘要，外部更改或文件丢失时停止覆盖，要求另存或重新载入。ASS/SSA 文件时间以 10ms 保存，SRT 导出移除样式、覆盖标签和注释，并在界面确认损失。
 
@@ -116,3 +125,29 @@ Button 自动跟踪返回的 Promise，显示加载图标、aria-busy 并阻止�
 main/app-updater.ts 管理检查、下载及安装状态，独立于媒体任务的 Snapshot。每个进程启动在窗口加载后调用一次 startup，手动检查与下载合并并发请求；开发和常规 smoke 模式不连接更新源。electron-updater 6 使用构建生成的 app-update.yml，固定读取官方仓库的正式 GitHub Releases，禁止预发行及降级。下载完整 NSIS 安装包并校验 SHA-512，关闭隐式下载和退出自动安装。
 
 renderer 订阅专用更新事件，设置卡片和全局提示显示状态、进度与失败重试；下载不占用媒体操作的全局 busy。安装申请经现有主窗口 IPC 来源校验，不接受外部 URL 或文件路径。重启前先处理设置草稿并保存字幕，再通过带更新原因的自绘退出确认执行服务收尾。GuardedNsisUpdater 沿用 NSIS 安装与提权路径，等待安装进程成功启动后才退出；启动失败保留自绘确认窗，允许重试安装或退出，不能恢复已关闭的后台服务。测试驱动仅在同时设置 MUXIVRA_SMOKE=1 与 MUXIVRA_UPDATE_TEST=1 时启用，不下载或执行安装程序。
+
+## 字幕音频视窗与播放同步
+
+波形接口接受开始时间、视窗时长和像素宽度。FFmpeg 按视窗解码第一条音轨为 48 kHz 浮点 PCM，流式聚合各声道的正负峰值及 RMS，不保存整片 PCM。视窗范围为 250ms 至 120s，输出最多 4096 个像素桶；主进程和 renderer 各缓存最近 32 个视窗。新请求取消过期解码，关闭应用时中止后台进程，删除项目前等待波形读取释放媒体文件。
+
+`aresample` 的 `async=1:first_pts=0` 对齐音频时间戳并补足初始静音；参见 [FFmpeg 音频重采样文档](https://ffmpeg.org/ffmpeg-resampler.html)。真实延迟音轨夹具同时验证起点与非零视窗跳转。renderer 绘制时间网格、峰值、RMS、字幕区间与播放游标；Ctrl+滚轮围绕鼠标位置缩放，默认 15 秒，播放离开视窗时切换到对应时间范围。
+
+跟随播放默认关闭。开启后按 `[startMs,endMs)` 选择当前所有对白，排除注释，自动定位分页与表格内部滚动。文本或事件输入框有焦点、弹窗和样式二级页期间暂缓跟随；退出编辑后恢复。搜索时停止跟随，防止播放自动改动搜索结果页。
+
+## 活动项目与编辑缓存
+
+0.17.0 的项目创建及文件操作集中在项目管理二级页。ProjectManager 串行化打开、关闭、删除、缓存和保存；空工作区不读写旧恢复会话，没有自动保存计时器。延迟编辑请求先核对活动项目和文档 ID，过期缓存直接结束，写入仍须通过关联路径和文件校验。编辑页仅在可见且关联匹配时缓存，离开页保存当前工程；隐藏时退出不会覆盖项目管理已更新的内容。ASR 只接受已有项目内的媒体。
+
+## 原生 Python ASR 与显示时钟
+
+0.18.0 的 shared/asr-parameters.ts 按后端维护受限参数目录，shared/asr-environments.ts 定义环境和检查状态。AsrModels 将模型绑定到环境，并按模型持久化识别配置；提交时把环境与配置快照放入队列计划。resources/asr/adapter.py 由所选解释器启动，直接调用官方原生类，诊断仅进入 stderr，JSONL 结果经统一时间映射后衔接工程。Python、依赖与权重不进入发行包，推理启用本地离线加载。上游接口版本和限制见 [适配器文档](asr/ADAPTERS.md)。
+
+Windows ASR 子进程加入独立 Job Object，后续启动的 Python 解释器和子进程自动进入同一组。暂停/继续处理该组中的进程，取消终止整个组，句柄关闭也清理子进程，避免 venv 启动器结束后仍留有模型计算。
+
+波形静态画布与 SVG 播放指示线分离。显示时钟按 requestAnimationFrame 外推当前位置，并在实际报告之间缓和小误差；暂停、显式跳转、倍速更改和大幅位置变化直接校准，停止报告 250ms 后不再外推。动画不解码波形、不发送播放器请求，也不重写字幕时间；字幕跟随和编辑沿用实际位置。
+
+## Current subtitle MCP and ASR telemetry
+
+The main-process subtitle bridge reads the active renderer document and applies schema-limited edits with a content hash plus editor-session revision. Renderer-side preconditions close the read/write race; each batch enters the regular undo/save flow. Page transitions wait for active remote writes, and remote writes reject pending local saves. The MCP layer serializes mutations and keeps request-key results.
+
+ASR stage telemetry distinguishes known phase progress from unknown audio progress. Qwen observes native SDK generate and alignment calls, while MOSS uses native callbacks; neither changes application chunking. Indeterminate bars animate without invented percentages, and the queue heartbeat keeps elapsed time live during model loading.

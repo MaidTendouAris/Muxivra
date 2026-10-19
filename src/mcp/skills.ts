@@ -5,10 +5,11 @@ import audio from '../../resources/mcp-skills/audio/SKILL.md?raw'
 import video from '../../resources/mcp-skills/video/SKILL.md?raw'
 import parametersGuide from '../../resources/mcp-skills/parameters/SKILL.md?raw'
 import troubleshooting from '../../resources/mcp-skills/troubleshooting/SKILL.md?raw'
+import subtitles from '../../resources/mcp-skills/subtitles/SKILL.md?raw'
 import { parameters, parameterGroups, filterLibrary, internalEncoderParameters } from '../shared/parameters'
 import { APP_VERSION } from '../shared/version'
 
-export const skillIds = ['connection','workflow','goals','audio','video','parameters','troubleshooting'] as const
+export const skillIds = ['connection','workflow','goals','audio','video','parameters','troubleshooting','subtitles'] as const
 export type SkillId = typeof skillIds[number]
 const documents = [
   { id:'connection', name:'连接与验证', description:'本机 HTTP MCP、凭据和客户端配置', markdown:connection },
@@ -17,7 +18,8 @@ const documents = [
   { id:'audio', name:'音频转码', description:'AAC / M4A、MP3、FLAC 与音频设置', markdown:audio },
   { id:'video', name:'视频与封装', description:'编码器、硬件能力、画面和轨道', markdown:video },
   { id:'parameters', name:'参数参考', description:'随当前代码生成的参数、滤镜与范围', markdown:parametersGuide },
-  { id:'troubleshooting', name:'任务与排错', description:'暂停、取消、去重、耗时和连接诊断', markdown:troubleshooting }
+  { id:'troubleshooting', name:'任务与排错', description:'暂停、取消、去重、耗时和连接诊断', markdown:troubleshooting },
+  { id:'subtitles', name:'当前字幕工程', description:'校正、翻译、ASS 样式与效果、版本冲突和撤销', markdown:subtitles }
 ] as const
 export const skillCatalog = () => documents.map(({ markdown:_, ...info }) => ({ ...info, uri:`muxivra://skills/${info.id}`, version:APP_VERSION }))
 export const parameterReference = () => ({ version:APP_VERSION, groups:parameterGroups, parameters, filters:filterLibrary, codecParameters:internalEncoderParameters })

@@ -1,6 +1,6 @@
 # 应用更新
 
-Muxivra 的 Windows x64 安装版从 [GitHub Releases](https://github.com/MaidTendouAris/Muxivra/releases) 获取正式版本。每次启动应用都会检查一次更新；设置中的“应用更新”也可手动检查。
+Muxivra 的 Windows x64 安装版从 [GitHub Releases](https://github.com/MaidTendouAris/Muxivra/releases) 获取正式版本。“启动时自动检查更新”默认开启，每次启动检查一次。设置页最底部“软件信息”提供版本、应用/FFmpeg/mpv 许可、仓库、问题反馈、自动检查开关和手动检查/下载/安装。开关保存后在下次启动生效，关闭自动检查后仍可手动检查。“手动更新”打开 GitHub Releases 供用户下载安装包。
 
 发现新版本后，点击“下载更新”。下载状态显示进度、速度与大小，失败后可重试。下载时可以继续播放、编辑和处理媒体。下载完成后点击“重启并安装”，应用会先显示确认窗口，再保存字幕工程并停止播放器、MCP 服务和处理队列。确认后安装新版本并重新启动；未确认时继续使用当前版本。关闭主窗口仍然隐藏到托盘。
 
@@ -16,15 +16,15 @@ Muxivra 的 Windows x64 安装版从 [GitHub Releases](https://github.com/MaidTe
 
 ## Release 文件要求
 
-每个稳定版使用 `v<版本>` 标签，例如 `v0.13.0`，并在同一个 GitHub Release 中包含同一次构建生成的文件：
+每个稳定版使用 `v<版本>` 标签，例如 `v0.17.0`，并在同一个 GitHub Release 中包含同一次构建生成的文件：
 
 | 文件 | 用途 |
 | --- | --- |
 | `Muxivra-<版本>-win-x64-setup.exe` | Windows x64 NSIS 安装包 |
-| `Muxivra-<版本>-win-x64-setup.exe.blockmap` | 发行构建元数据；本版客户端使用完整安装包下载 |
+| `Muxivra-<版本>-win-x64-portable.zip` | 完整便携版，解压运行 |
 | `latest.yml` | 版本、下载文件名、大小与 SHA-512 校验信息 |
-| `Muxivra-<版本>-source.zip` | 应用源码与许可证归档 |
-| `SHA256SUMS.txt` | 手动下载文件的 SHA-256 校验值 |
+
+当前客户端禁用了差量下载，使用完整安装包，因此无需将 `.blockmap` 上传到 Release。源码使用 GitHub 自动提供的标签归档，不另上传源码包；SHA-256 清单保存在 Actions 验证报告中。`latest.yml` 可以包含 ZIP 的校验信息，但安装版更新始终选择 EXE。
 
 不能只上传安装包，也不能把不同构建生成的安装包与 `latest.yml` 混合。应用只读取公开的正式版本，草稿和预发行版本不会成为更新源。发布过程见 [发行文档](DISTRIBUTION.md)。
 

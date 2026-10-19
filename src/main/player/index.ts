@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
 import { readFile, writeFile, mkdir, stat, unlink, link, copyFile } from 'node:fs/promises'
 import { createReadStream, constants } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename,resolve } from 'node:path'
 import { MpvIpc } from '../../core/player/ipc'
 import { NativePlayerSurface } from './surface'
 import { inputFormatWhitelist } from '../../shared/media-policy'
@@ -128,7 +128,7 @@ class PlayerSession extends EventEmitter {
   async shutdown():Promise<void> {
     this.closing=true;this.abort.abort();if(this.timer)clearTimeout(this.timer)
     try {if(this.state.ready)await this.command(['quit'])}catch{}
-    if(this.process?.exitCode===null){await Promise.race([new Promise(resolve=>this.process!.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,1500))]);if(this.process.exitCode===null)this.process.kill()}
+    if(this.process?.exitCode===null){await Promise.race([new Promise(resolve=>this.process!.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,1500))]);if(this.process.exitCode===null){this.process.kill();await Promise.race([new Promise(resolve=>this.process!.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,3000))])}}
     this.ipc.close();this.surface.destroy()
   }
 }
@@ -160,6 +160,16 @@ export class MpvPlayers extends EventEmitter {
     return session
   }
   state(owner:PlayerOwner):PlayerState {return structuredClone(this.sessions.get(owner)?.state??emptyPlayerState(owner))}
+  async releaseProject(directory:string):Promise<void>{
+    const root=resolve(directory).toLowerCase()
+    for(const [owner,session] of this.sessions){
+      const path=session.state.path?resolve(session.state.path).toLowerCase():''
+      if(path===root||path.startsWith(root+'\\')||path.startsWith(root+'/')){
+        if(session.state.fullscreen)this.setFullscreen(session,false)
+        await session.shutdown();this.sessions.delete(owner);this.emit('state',emptyPlayerState(owner))
+      }
+    }
+  }
   async open(owner:PlayerOwner,paths:string[],append=false):Promise<void> {
     if(!paths.length||paths.length>500)throw new Error('播放列表需要 1 至 500 个文件')
     const authorized:string[]=[]
@@ -218,7 +228,8 @@ export class MpvPlayers extends EventEmitter {
     await session.execute(async()=>{
       const cues=document.cues.filter(cue=>cue.text.trim()&&cue.endMs>cue.startMs)
       if(!cues.length){if(session.editorTrack)await session.command(['sub-remove',session.editorTrack]);session.editorTrack=undefined;return}
-      const directory=join(this.service.dataPath,'player-subtitles');await mkdir(directory,{recursive:true})
+      const project=this.service.projects.forMedia(document.mediaPath??'')
+      const directory=join(project?.directory??this.service.dataPath,'player-subtitles');await mkdir(directory,{recursive:true})
       const path=join(directory,`${owner}.ass`);await writeFile(path,serializeAss({...document,cues}))
       if(session.editorTrack)await session.command(['sub-reload',session.editorTrack])
       else {await session.command(['sub-add',path,'select','编辑字幕']);const tracks:PlayerTrack[]=await session.command(['get_property','track-list']);session.editorTrack=tracks.find(track=>track['external-filename']===path)?.id}

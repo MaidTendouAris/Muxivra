@@ -13,6 +13,9 @@ export const escapeFilterValue = (value:string) => value.replace(/[\\':]/g,c=>'\
 function filterText(name:string,options:Record<string,string>):string {const pairs=Object.entries(options).map(([key,value])=>`${key}=${escapeFilterValue(value)}`);return name+(pairs.length?'='+pairs.join(':'):'')}
 export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, inputOptions: TranscodeOptions): Plan {
   const options = optionsSchema.parse(inputOptions) as TranscodeOptions, a=options.advanced??{}
+  const embed=!!options.subtitleFile&&options.subtitleMode==='embed'
+  if(embed&&!['mp4','mkv','mov'].includes(options.container))throw new Error('外挂字幕封装仅支持 MP4、MOV 或 MKV')
+  if(embed&&(a.burnSubtitle!==undefined||Object.keys(a).some(key=>key.startsWith('subtitle'))))throw new Error('封装字幕不能同时使用烧录或字幕样式覆盖参数')
   if(Object.keys(a).some(key=>key.startsWith('subtitle'))&&a.burnSubtitle===undefined&&!options.subtitleFile)throw new Error('字幕样式需要先选择烧录字幕来源')
   if(a.imageLoop!==undefined&&!['gif','webp'].includes(options.container))throw new Error('动画循环仅适用于 GIF / WebP')
   if(a.imageQuality!==undefined&&!['jpg','webp'].includes(options.container))throw new Error('图像质量仅适用于 JPEG / WebP')
@@ -33,6 +36,7 @@ export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, 
   if(a.decoder&&!engine.decoders.includes(String(a.decoder)))throw new Error(`当前引擎不支持解码器 ${a.decoder}`)
   if(a.autorotate==='off')args.push('-noautorotate')
   args.push('-protocol_whitelist','file,pipe','-format_whitelist',inputFormatWhitelist,'-i',media.path)
+  if(embed)args.push('-protocol_whitelist','file,pipe','-format_whitelist','ass,srt','-i',options.subtitleFile!)
   if(start&&a.seekMode!=='fast')args.push('-ss',String(start))
   if(a.end!==undefined||a.duration!==undefined)args.push('-t',String(duration))
   if(start&&(options.video==='copy'||options.audio==='copy'))warnings.push('复制轨道剪辑受关键帧与音频包边界限制')
@@ -60,13 +64,14 @@ export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, 
     if(isAudio&&audio.length>1)throw new Error('音频文件仅支持一条音轨，请指定轨道')
     if(isImage&&video.length!==1)throw new Error('图像输出请选择一条视频轨道')
     for(const stream of mapped)args.push('-map',`0:${stream.index}`)
+    if(embed)args.push('-map','1:0')
     args.push('-map_metadata',a.metadata==='remove'?'-1':'0','-map_chapters',a.chapters==='remove'?'-1':'0')
     if(a.attachments==='copy') {
       if(options.container!=='mkv')throw new Error('附件复制需要 MKV 格式')
       args.push('-map','0:t?','-c:t','copy')
     }
     for(const item of options.metadata??[])args.push('-metadata',`${item.key}=${item.value}`)
-    const videoChanges=vf.length||options.subtitleFile||Object.keys(a).some(key=>['encoder','quality','color','image'].includes(parameters.find(p=>p.key===key)?.group??'')||key.startsWith('subtitle')||key==='burnSubtitle')
+    const videoChanges=vf.length||(!embed&&options.subtitleFile)||Object.keys(a).some(key=>['encoder','quality','color','image'].includes(parameters.find(p=>p.key===key)?.group??'')||key.startsWith('subtitle')||key==='burnSubtitle')
     const audioChanges=af.length||Object.keys(a).some(key=>parameters.find(p=>p.key===key)?.group==='audio'||key==='audioDelay')
     if(options.video==='copy'&&(videoChanges||(options.maxHeight&&video.some(s=>(s.height??0)>options.maxHeight!))||(options.encoderOptions??[]).some(p=>p.scope==='video')))throw new Error('复制视频不能应用画面、滤镜或编码参数，请选择视频编码器')
     if(options.audio==='copy'&&(audioChanges||(options.encoderOptions??[]).some(p=>p.scope==='audio')))throw new Error('复制音频不能应用滤镜或编码参数，请选择音频编码器')
@@ -109,7 +114,7 @@ export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, 
           if(!pairs.length)throw new Error('色彩转换需要至少选择一项目标色彩参数')
           videoFilters.push('colorspace='+pairs.map(([k,v])=>`${k}=${v}`).join(':'))
         }
-        if(a.burnSubtitle!==undefined||options.subtitleFile) {
+        if(a.burnSubtitle!==undefined||options.subtitleFile&&!embed) {
           if(a.burnSubtitle!==undefined&&options.subtitleFile)throw new Error('请选择外部字幕或内嵌字幕中的一种来源')
           if(!options.subtitleFile){const sub=media.streams.filter(s=>s.type==='subtitle')[Number(a.burnSubtitle)];if(!sub||!['subrip','ass','ssa','mov_text','webvtt','text'].includes(sub.codec))throw new Error('烧录字幕需要存在的文本字幕轨道（按字幕轨从 0 编号）')}
           const color=(value:unknown)=>typeof value==='string'?`&H00${value.slice(5,7)}${value.slice(3,5)}${value.slice(1,3)}`:undefined
@@ -163,7 +168,9 @@ export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, 
       if(options.container==='webm'&&subtitles.some(s=>s.codec!=='webvtt'))throw new Error('WebM 字幕需要 WebVTT')
       if(['mp4','mov'].includes(options.container)&&subtitles.some(s=>!['subrip','ass','ssa','mov_text','webvtt','text'].includes(s.codec)))throw new Error('该字幕轨不能封装到 MP4/MOV，请使用 MKV')
       args.push('-c:s',['mp4','mov'].includes(options.container)?'mov_text':'copy')
-    } else args.push('-sn')
+      if(options.container==='mkv')subtitles.forEach((stream,index)=>{if(stream.codec==='mov_text'){if(!engine.encoders.includes('ass'))throw new Error('引擎缺少 ASS 字幕编码器');args.push(`-c:s:${index}`,'ass')}})
+    } else if(!embed)args.push('-sn')
+    if(embed){const codec=['mp4','mov'].includes(options.container)?'mov_text':'ass';if(!engine.encoders.includes(codec))throw new Error(`引擎缺少字幕编码器 ${codec}`);args.push(`-c:s:${options.subtitles==='copy'?subtitles.length:0}`,codec);if(codec==='mov_text')warnings.push('MP4 字幕不保留 ASS 样式和复杂效果，完整样式请使用 MKV 或烧录')}
     if(['mp4','m4a','mov'].includes(options.container)&&a.faststart!=='off')args.push('-movflags','+faststart')
   }
   if(a.fileSize!==undefined)args.push('-fs',String(Number(a.fileSize)*1024*1024))

@@ -92,9 +92,10 @@ export class AppUpdates extends EventEmitter {
     this.set({phase:'error',error:message,message,bytesPerSecond:0})
   }
 
-  startup(): Promise<AppUpdateState> {
+  startup(enabled=true): Promise<AppUpdateState> {
     if (this.startupStarted) return this.checking ?? Promise.resolve(this.state)
     this.startupStarted = true
+    if(!enabled){this.set({message:'自动检查已关闭，可手动检查更新'});return Promise.resolve(this.state)}
     return this.check()
   }
 

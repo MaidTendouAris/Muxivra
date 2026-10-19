@@ -9,7 +9,7 @@ import { createSubtitleDocument, normalizeSubtitleDocument } from '../../shared/
 import { parseSubtitleText, serializeAss, srtTextToAss } from './ass'
 import { JsonStore } from '../storage/json'
 import { atomicRename } from '../storage/atomic'
-import { canonicalOutput, localPath, PathPolicy } from '../media/paths'
+import { canonicalOutput, localPath, PathPolicy,isWithin } from '../media/paths'
 
 export const SUBTITLE_AUTOSAVE_MS = 60_000
 const MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -57,8 +57,8 @@ export class SubtitleProjectStore {
   private operations: Promise<unknown> = Promise.resolve()
   private timer?: ReturnType<typeof setInterval>
   private readonly store: JsonStore<unknown>
-  constructor(readonly dataPath: string, private readonly paths: PathPolicy, private readonly onUpdate: () => void = () => {}) {
-    this.store = new JsonStore(join(dataPath, 'subtitle-session.json'))
+  constructor(readonly dataPath: string, private readonly paths: PathPolicy, private readonly onUpdate: () => void = () => {},private readonly managed?:{mediaPath:string;projectPath:string;sessionFile?:string}) {
+    this.store = new JsonStore(join(dataPath, managed?.sessionFile??'subtitle-session.json'))
   }
   state(): SubtitleProjectState {
     const deleteUnavailableReason = this.deleteUnavailableReason()
@@ -76,11 +76,13 @@ export class SubtitleProjectStore {
   }
   get(): SubtitleDocument | undefined { return this.document ? structuredClone(this.document) : undefined }
   async initialize(): Promise<void> {
+    if(this.managed){try{const info=await lstat(this.store.path);if(!info.isFile()||info.isSymbolicLink())throw new Error('字幕恢复文件必须是普通项目文件')}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error}}
     const raw = await this.store.read(undefined)
     if (raw) {
       const saved = raw as Partial<RecoveryFile>
       const envelope = saved.version === 2 && !!saved.document
       const restored = subtitleSchema.parse(envelope ? saved.document : raw)
+      if(this.managed&&(restored.mediaPath!==this.managed.mediaPath||restored.projectPath!==this.managed.projectPath||restored.sourcePath&&!isWithin(this.dataPath,restored.sourcePath)))throw new Error('项目恢复文件的路径不属于此项目，已停止载入和自动保存')
       // Before version 2, recovery sessions contained SRT text rather than ASS.
       this.document = normalizeSubtitleDocument(!envelope && !restored.version
         ? { ...restored, exportFormat: 'srt', cues: restored.cues.map(cue => ({ ...cue, text: srtTextToAss(cue.text) })) }
@@ -155,6 +157,19 @@ export class SubtitleProjectStore {
     if (chosenPath && await this.present(sidecar)) { const sourcePath = await this.safeExisting(sidecar); seed = normalizeSubtitleDocument({ ...parseSubtitleText(decodeSubtitle(await this.readFile(sourcePath)), 'ass'), sourcePath, mediaPath }) }
     return this.openTarget(chosenPath ?? sidecar, seed, !chosenPath)
   }
+  openManaged(mediaPath:string,target:string):Promise<SubtitleDocument>{return this.openTarget(target,createSubtitleDocument({mediaPath}),true)}
+  relocateManaged(target:string):Promise<SubtitleDocument>{return this.exclusive(async()=>{
+    if(!this.managed||!this.document?.projectPath||this.state().dirty||this.recoveryPending)throw new Error('请先保存当前字幕文件')
+    const previous=this.envelope(this.document),old=await this.safeExisting(this.document.projectPath),next=localPath(target)
+    if(dirname(old)!==dirname(next)||extname(next).toLowerCase()!=='.ass')throw new Error('字幕必须保存在当前项目内')
+    if(old.toLowerCase()===next.toLowerCase())return structuredClone(this.document)
+    if(!this.baseHash||hash(await this.readFile(old))!==this.baseHash)throw new Error('字幕文件已被外部修改，已停止重命名')
+    const document={...this.document,projectPath:next,sourcePath:this.document.sourcePath===old?next:this.document.sourcePath}
+    const envelope={...this.envelope(document,this.baseHash,digest(document)),createdProjects:this.createdProjects.map(item=>item.path===old?{...item,path:next}:item)}
+    await link(old,next)
+    try{await this.store.write(envelope);await unlink(old)}catch(error){await this.store.write(previous);await unlink(next).catch(()=>{});throw error}
+    this.managed.projectPath=next;this.adopt(envelope);this.paths.files.delete(old);this.paths.files.add(next);this.onUpdate();return structuredClone(document)
+  })}
   async import(input: string, chosenPath?: string): Promise<SubtitleDocument> {
     const sourcePath = await this.paths.input(input), extension = extname(sourcePath).toLowerCase().slice(1)
     if (!['ass', 'ssa', 'srt'].includes(extension)) throw new Error('请选择 SRT、ASS 或 SSA 字幕')
@@ -165,6 +180,7 @@ export class SubtitleProjectStore {
   }
   private openTarget(target: string, seed: SubtitleDocument, allowExisting: boolean): Promise<SubtitleDocument> {
     return this.exclusive(async () => {
+      if(this.managed&&(localPath(target)!==this.managed.projectPath||seed.mediaPath!==this.managed.mediaPath))throw new Error('字幕必须保存在当前项目内')
       if (this.document && (this.document.projectPath || this.document.cues.length) && this.state().dirty) throw new Error('当前字幕工程有未保存的更改，请先保存工程')
       if (extname(target).toLowerCase() !== '.ass') throw new Error('字幕工程必须保存为 ASS 文件')
       const path = localPath(target)
@@ -240,6 +256,7 @@ export class SubtitleProjectStore {
         if (nextHash !== this.baseHash) {
           const backupDirectory = join(this.dataPath, 'subtitle-backups', hash(this.document.id).slice(0, 32))
           await mkdir(backupDirectory, { recursive: true })
+          if(!isWithin(await realpath(this.dataPath),await realpath(backupDirectory)))throw new Error('字幕备份目录已变化，已停止保存')
           const backup = join(backupDirectory, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.ass`)
           const backupHandle = await open(backup, 'wx', 0o600)
           try { await backupHandle.writeFile(old); await backupHandle.sync() } finally { await backupHandle.close() }

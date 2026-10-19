@@ -37,7 +37,7 @@ describe('可复制的 MCP 连接提示词',()=>{
 })
 describe('内置指南与真实结构化参数',()=>{
   it('固定目录拒绝任意文件路径，参数参考跟随共享定义',()=>{
-    expect(skillCatalog().map(s=>s.id)).toEqual(['connection','workflow','goals','audio','video','parameters','troubleshooting'])
+    expect(skillCatalog().map(s=>s.id)).toEqual(['connection','workflow','goals','audio','video','parameters','troubleshooting','subtitles'])
     expect(()=>readSkill('../../config.json')).toThrow('未知指南')
     const reference=readSkill('parameters').parameterReference!
     expect(reference).toEqual(parameterReference())

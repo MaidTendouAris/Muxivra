@@ -24,6 +24,7 @@ export const optionsSchema = z.object({
   advanced:advancedSchema.optional(),filters:z.array(filterSettingSchema).max(64).optional(),encoderOptions:z.array(encoderSettingSchema).max(120).optional(),
   metadata:z.array(z.object({key:z.string().regex(/^[a-zA-Z0-9_.-]{1,80}$/),value:z.string().max(2000).refine(v=>!/[\x00-\x1f]/.test(v))}).strict()).max(64).optional(),
   subtitleFile:z.string().min(1).max(32760).refine(v=>!/[\x00-\x1f]/.test(v)).optional(),
+  subtitleMode:z.enum(['burn','embed']).optional(),
   codecParameters:z.record(z.string().refine(k=>internalEncoderParameters.some(p=>p.key===k),'未知编码器内部参数'),safeOptionValue).optional()
 }).strict()
 export const pathSchema = z.string().min(1).max(32760).refine(v => !/[\x00-\x1f]/.test(v), '路径包含控制字符')
@@ -53,10 +54,12 @@ export const subtitleSchema = z.object({
 export const presetSchema = z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/), name: z.string().min(1).max(80), description: z.string().max(500), options: optionsSchema }).strict()
 export const presetFileSchema = z.object({format:z.literal('muxivra-presets'),version:z.literal(1),presets:z.array(presetSchema).min(1).max(200)}).strict()
 export const settingsSchema = z.object({
+  language:z.enum(['system','zh-CN','en']).default('system'),
+  autoUpdate:z.boolean().default(true),
   theme: z.enum(['dark','light','system']), concurrency: z.number().int().min(1).max(4),
   shortcuts:shortcutBindingsSchema,
   mcp: z.object({ enabled: z.boolean(), port: z.number().int().min(1024).max(65535), token: z.string().regex(/^[a-f0-9]{64}$/),
     inputRoots: z.array(pathSchema).max(32), outputRoots: z.array(pathSchema).max(33),
-    allowInspect: z.boolean(), allowSubmit: z.boolean(), allowCancel: z.boolean()
+    allowInspect: z.boolean(), allowSubmit: z.boolean(), allowCancel: z.boolean(),allowSubtitleEdit:z.boolean().default(false)
   }).strict()
 }).strict()

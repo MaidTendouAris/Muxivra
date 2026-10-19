@@ -9,6 +9,8 @@ import { JobHistoryStore, HISTORY_LIMIT, isFinishedJob } from './history'
 import { exists, canonicalInput, canonicalOutput } from '../media/paths'
 import { stopProcess } from '../engine/process'
 import { suspendChild } from './process-control'
+import { asrUsesChunks,type AsrPlan } from '../../shared/asr'
+import { cleanAsrArtifacts,type AsrExecutionContext } from '../asr/runner'
 
 export class JobQueue extends EventEmitter {
   jobs: Job[] = []
@@ -23,6 +25,11 @@ export class JobQueue extends EventEmitter {
   private store: JobHistoryStore
   private requests = new Map<string, { fingerprint: string; ids: string[]; expired?:boolean }>()
   private persistenceError?: string
+  asrExecutor?: (job:Job,context:AsrExecutionContext)=>Promise<void>
+  artifactRoot?: (plan:Job['plan'])=>string
+  persistArtifacts?: (jobs:Job[])=>Promise<void>
+  validateArtifacts?: (plan:Job['plan'])=>Promise<unknown>
+  private asrControls=new Map<string,{controller:AbortController;wake?:()=>void;processPaused?:boolean}>()
   constructor(readonly dataPath: string) { super(); this.store = new JobHistoryStore(dataPath) }
   async initialize(): Promise<void> {
     this.jobs = await this.store.read()
@@ -48,10 +55,11 @@ export class JobQueue extends EventEmitter {
     result.elapsedMs = job.elapsedMs!==undefined||since!==undefined?elapsedMs:undefined
     result.estimateBasis = 'unknown'; delete result.estimatedRemainingMs
     const duration = job.plan.durationMs ?? job.plan.input.durationMs
-    if (['running','paused'].includes(job.status) && job.processedMs > 0 && elapsedMs >= 1000 && duration > 0) {
+    if (['running','paused'].includes(job.status) && !job.progressIndeterminate&&job.progressScope!=='stage'&&job.processedMs > 0 && elapsedMs >= 1000 && duration > 0) {
       result.estimatedRemainingMs = Math.max(0,(duration-job.processedMs)*elapsedMs/job.processedMs); result.estimateBasis = 'progress'
     } else if (['queued','paused'].includes(job.status) && !job.startedAt && duration > 0) {
-      const examples = this.jobs.filter(j => j.status === 'completed' && (j.elapsedMs ?? 0) > 0 && JSON.stringify(j.plan.options) === JSON.stringify(job.plan.options) && j.plan.input.streams.some(s=>s.type==='video')===job.plan.input.streams.some(s=>s.type==='video') && j.plan.input.streams.find(s=>s.type==='video')?.width===job.plan.input.streams.find(s=>s.type==='video')?.width && j.plan.input.streams.find(s=>s.type==='video')?.height===job.plan.input.streams.find(s=>s.type==='video')?.height && j.plan.engine.id===job.plan.engine.id).slice(-5)
+      const parameters=(j:Job)=>JSON.stringify(j.plan.kind==='asr'?j.plan.asr:j.plan.options)
+      const examples = this.jobs.filter(j => j.status === 'completed' && (j.elapsedMs ?? 0) > 0 && j.plan.kind===job.plan.kind && parameters(j)===parameters(job) && j.plan.input.streams.some(s=>s.type==='video')===job.plan.input.streams.some(s=>s.type==='video') && j.plan.input.streams.find(s=>s.type==='video')?.width===job.plan.input.streams.find(s=>s.type==='video')?.width && j.plan.input.streams.find(s=>s.type==='video')?.height===job.plan.input.streams.find(s=>s.type==='video')?.height && j.plan.engine.id===job.plan.engine.id).slice(-5)
       const rates = examples.flatMap(j => { const d=j.plan.durationMs??j.plan.input.durationMs; return d>0?[(j.elapsedMs??0)/d]:[] })
       if (rates.length) { result.estimatedRemainingMs = duration*rates.reduce((a,b)=>a+b,0)/rates.length; result.estimateBasis = 'history' }
     }
@@ -79,7 +87,7 @@ export class JobQueue extends EventEmitter {
         const id = randomUUID()
         const createdAt=new Date().toISOString()
         return { id, batchId, requestKey, requestFingerprint: fingerprint, requestJobCount:requests.length, source, plan, createdAt, events:[{at:createdAt,type:'queued',message:'任务已提交'}], status: 'queued', progress: 0, processedMs: 0, speed: '',
-          logTail: '', logPath: join(this.dataPath,'logs',`${id}.log`), temporaryPath: this.temporaryPath(plan,id) }
+          logTail: '', logPath: join(this.artifactRoot?.(plan)??this.dataPath,'logs',`${id}.log`), temporaryPath: this.temporaryPath(plan,id) }
       })
       const previousJobs=this.jobs
       for(const job of jobs)this.submitting.add(job.id)
@@ -93,7 +101,14 @@ export class JobQueue extends EventEmitter {
     })
   }
   private fingerprint(requests: JobRequest[]): string { return createHash('sha256').update(JSON.stringify(requests)).digest('hex') }
-  private temporaryPath(plan: Plan, id: string): string { return join(dirname(plan.outputPath),`.${basename(plan.outputPath)}.${id}.muxivra-part${extname(plan.outputPath)}`) }
+  async submitAsr(plan:AsrPlan,id=randomUUID()):Promise<Job>{return this.exclusive(async()=>{
+    if(this.paused||this.persistenceError)throw new Error(this.persistenceError??'应用正在退出')
+    const createdAt=new Date().toISOString(),job:Job={id,source:'gui',plan,createdAt,status:'queued',progress:0,processedMs:0,speed:'',logTail:'',logPath:join(this.artifactRoot?.(plan)??this.dataPath,'logs',`${id}.log`),temporaryPath:this.temporaryPath(plan,id),events:[{at:createdAt,type:'queued',message:'ASR 识别任务已提交'}]}
+    const previous=this.jobs;this.jobs=[...previous,job];this.submitting.add(id)
+    try{await this.persist()}catch(error){this.jobs=previous;throw error}finally{this.submitting.delete(id)}
+    this.emit('update');setImmediate(()=>this.pump());return this.describe(job)
+  })}
+  private temporaryPath(plan: Job['plan'], id: string): string { return join(dirname(plan.outputPath),`.${basename(plan.outputPath)}.${id}.muxivra-part${extname(plan.outputPath)}`) }
   private exclusive<T>(operation: () => Promise<T>): Promise<T> { const result = this.operations.catch(() => {}).then(operation); this.operations = result; return result }
   async cancel(id: string): Promise<Job> {
     return this.exclusive(async () => {
@@ -104,6 +119,12 @@ export class JobQueue extends EventEmitter {
         this.cancelled.add(id)
         this.record(job,'cancel-requested','已请求取消处理')
         this.emit('update')
+        const control=this.asrControls.get(id)
+        if(control){
+          const child=this.children.get(id)
+          if(control.processPaused&&child){try{suspendChild(child,false)}catch{child.kill()}}
+          control.processPaused=false;control.controller.abort();control.wake?.();return this.get(id)
+        }
         const child = this.children.get(id)
         if (child) {
           if (job.status === 'paused') { try { suspendChild(child,false) } catch { child.kill() } }
@@ -120,11 +141,14 @@ export class JobQueue extends EventEmitter {
       if(job.status==='paused')return this.get(id)
       if(!['queued','running'].includes(job.status)||this.cancelled.has(id))throw new Error('当前任务不能暂停')
       const previous=job.status as 'queued'|'running'
-      if(previous==='running'){const child=this.children.get(id);if(!child)throw new Error('任务正在启动或收尾，请稍后再试');suspendChild(child,true);this.stopClock(job)}
+      if(previous==='running'&&job.plan.kind==='asr'&&asrUsesChunks(job.plan.asr.options)){
+        job.pausing=true;this.record(job,'pause-requested','识别将在当前音频分块结束后暂停');await this.persist();this.emit('update');return this.get(id)
+      }
+      if(previous==='running'){const child=this.children.get(id);if(!child)throw new Error('任务正在启动或收尾，请稍后再试');suspendChild(child,true);const control=this.asrControls.get(id);if(control)control.processPaused=true;this.stopClock(job)}
       job.status='paused';job.pausedFrom=previous
       this.record(job,'paused','任务已暂停')
       try {await this.persist()} catch(error) {
-        if(previous==='running'){const child=this.children.get(id);if(child){try{suspendChild(child,false)}catch{child.kill()}}this.activeSince.set(id,Date.now())}
+        if(previous==='running'){const child=this.children.get(id);if(child){try{suspendChild(child,false)}catch{child.kill()}}const control=this.asrControls.get(id);if(control)control.processPaused=false;this.activeSince.set(id,Date.now())}
         job.status=previous;delete job.pausedFrom;throw error
       }
       this.emit('update');return this.get(id)
@@ -134,9 +158,22 @@ export class JobQueue extends EventEmitter {
     return this.exclusive(async () => {
       if(this.paused)throw new Error('应用正在退出')
       const job=this.jobs.find(j=>j.id===id);if(!job)throw new Error('任务不存在')
+      if(job.plan.kind==='asr'&&job.pausing){delete job.pausing;this.record(job,'resumed','已撤销暂停请求');await this.persist();this.emit('update');return this.get(id)}
       if(job.status!=='paused')return this.get(id)
       if(this.cancelled.has(id))throw new Error('任务正在取消')
       const previous=job.pausedFrom??'queued'
+      if(previous==='running'&&job.plan.kind==='asr'){
+        const control=this.asrControls.get(id);if(!control)throw new Error('识别进程已结束')
+        const child=this.children.get(id),wasProcessPaused=control.processPaused
+        if(wasProcessPaused&&child)suspendChild(child,false)
+        control.processPaused=false;job.status='running';delete job.pausedFrom;this.activeSince.set(id,Date.now());this.record(job,'resumed','识别已继续')
+        try{await this.persist()}catch(error){
+          this.stopClock(job);job.status='paused';job.pausedFrom='running'
+          if(wasProcessPaused&&child){try{suspendChild(child,true);control.processPaused=true}catch{child.kill()}}
+          throw error
+        }
+        control.wake?.();this.emit('update');return this.get(id)
+      }
       if(previous==='running'){const child=this.children.get(id);if(!child)throw new Error('处理进程已结束');suspendChild(child,false);this.activeSince.set(id,Date.now())}
       job.status=previous;delete job.pausedFrom
       this.record(job,'resumed','任务已继续')
@@ -159,7 +196,7 @@ export class JobQueue extends EventEmitter {
   private pump(): void {
     if (this.paused || this.persistenceError) return
     while (this.executions.size < this.concurrency) {
-      const job = this.jobs.find(j => j.status === 'queued'&&!this.submitting.has(j.id))
+      const job = this.jobs.find(j => j.status === 'queued'&&!this.submitting.has(j.id)&&(j.plan.kind!=='asr'||!this.asrControls.size))
       if (!job) break
       job.status = 'running'
       const execution = this.execute(job)
@@ -168,6 +205,7 @@ export class JobQueue extends EventEmitter {
     }
   }
   private async execute(job: Job): Promise<void> {
+    if(job.plan.kind==='asr')return this.executeAsr(job)
     let log: ReturnType<typeof createWriteStream> | undefined
     let started = false
     try {
@@ -182,7 +220,9 @@ export class JobQueue extends EventEmitter {
       if (await exists(job.temporaryPath)) throw new Error('临时文件已存在，请检查日志')
       const args = [...job.plan.args.slice(0,-1),job.temporaryPath]
       job.executedArgs=args
-      log = createWriteStream(job.logPath, { flags: 'a' })
+      await this.validateArtifacts?.(job.plan)
+      await mkdir(dirname(this.ownedLogPath(job)),{recursive:true})
+      log = createWriteStream(this.ownedLogPath(job), { flags: 'a' })
       let logFailure: Error | undefined
       log.on('error',error => { logFailure = error; this.children.get(job.id)?.kill() })
       log.write(JSON.stringify({ engine: job.plan.engine.ffmpegPath, args }) + '\n')
@@ -232,21 +272,68 @@ export class JobQueue extends EventEmitter {
       this.emit('update')
     }
   }
+  private async executeAsr(job:Job):Promise<void>{
+    const control:{controller:AbortController;wake?:()=>void;processPaused?:boolean}={controller:new AbortController()}
+    this.asrControls.set(job.id,control)
+    const heartbeat=setInterval(()=>{if(job.status==='running')this.emit('update')},1000)
+    let log:ReturnType<typeof createWriteStream>|undefined,logFailure:Error|undefined
+    try{
+      job.startedAt=new Date().toISOString();job.elapsedMs=0;this.activeSince.set(job.id,Date.now());this.record(job,'started','开始 ASR 预处理')
+      await this.persist();this.emit('update')
+      if(this.cancelled.has(job.id))control.controller.abort()
+      if(!this.asrExecutor)throw new Error('ASR 后端未配置')
+      await this.validateArtifacts?.(job.plan)
+      await mkdir(dirname(this.ownedLogPath(job)),{recursive:true})
+      log=createWriteStream(this.ownedLogPath(job),{flags:'a'});log.on('error',error=>{logFailure=error;control.controller.abort()})
+      let last=0
+      await this.asrExecutor(job,{
+        signal:control.controller.signal,
+        child:child=>{if(child){this.children.set(job.id,child);child.once('close',(code,signal)=>{job.exitCode=code;job.exitSignal=signal})}else this.children.delete(job.id)},
+        log:text=>{job.logTail=(job.logTail+text).slice(-16000);log?.write(text)},
+        progress:(stage,percent,processedMs,detail)=>{const changed=job.stage!==stage;job.stage=stage;job.progress=Math.min(detail?.scope==='stage'?100:99.9,Math.max(0,percent));job.processedMs=processedMs;job.progressIndeterminate=detail?.indeterminate??false;job.progressScope=detail?.scope??'job';job.progressMetrics=detail?.metrics;const elapsed=(job.elapsedMs??0)+(this.activeSince.has(job.id)?Date.now()-this.activeSince.get(job.id)!:0);job.speed=!job.progressIndeterminate&&job.progressScope!=='stage'&&elapsed>0&&processedMs>0?(processedMs/elapsed).toFixed(2)+'x':'';if(changed||Date.now()-last>200){last=Date.now();this.emit('update')}},
+        checkpoint:async(chunkBoundary=true)=>{
+          control.controller.signal.throwIfAborted()
+          if(job.pausing&&chunkBoundary){
+            job.status='paused';job.pausedFrom='running';delete job.pausing;this.stopClock(job);this.record(job,'paused','识别已在分块边界暂停');
+          }
+          if(job.status==='paused'){
+            // Whole-audio mode may finish a child just as it is suspended.
+            // Wait here before spawning another child or publishing results.
+            const waiting=new Promise<void>(resolve=>{control.wake=resolve})
+            await this.persist();this.emit('update');await waiting;control.wake=undefined
+          }
+          control.controller.signal.throwIfAborted()
+        }
+      })
+      if(logFailure)throw logFailure
+      if(this.cancelled.has(job.id))throw new Error('操作已取消')
+      job.status='completed';job.progress=100;job.progressIndeterminate=false;job.progressScope='job';job.stage='字幕初稿已生成'
+    }catch(error){job.status=this.cancelled.has(job.id)?'cancelled':'failed';job.error=this.cancelled.has(job.id)?'操作已取消':(error as Error).message}
+    finally{
+      clearInterval(heartbeat);this.stopClock(job);delete job.pausedFrom;delete job.pausing
+      job.finishedAt=new Date().toISOString();this.record(job,job.status,job.error??'字幕初稿已生成')
+      if(log&&!log.closed)await new Promise<void>(resolve=>{log!.end(resolve);if(log!.destroyed)resolve()})
+      await appendFile(this.ownedLogPath(job),JSON.stringify({finishedAt:job.finishedAt,status:job.status,elapsedMs:job.elapsedMs,error:job.error})+'\n').catch(()=>{})
+      this.children.delete(job.id);this.cancelled.delete(job.id);this.asrControls.delete(job.id)
+      await this.persist().catch(error=>{this.persistenceError=`任务历史无法保存：${(error as Error).message}`;this.emit('storage-error',this.persistenceError)})
+      this.emit('update')
+    }
+  }
   private record(job:Job,type:string,message:string):void{(job.events??=[]).push({at:new Date().toISOString(),type,message})}
   private rebuildRequests():void{
     this.requests.clear()
     for(const job of this.jobs){if(!job.requestKey)continue;const key=`${job.source}:${job.requestKey}`,entry=this.requests.get(key)??{fingerprint:job.requestFingerprint??'',ids:[],expired:false};entry.ids.push(job.id);entry.expired ||=!!job.requestExpired;this.requests.set(key,entry)}
-    for(const entry of this.requests.values()){const jobs=entry.ids.map(id=>this.jobs.find(j=>j.id===id)!);entry.fingerprint ||=this.fingerprint(jobs.map(j=>({inputPath:j.plan.input.path,outputPath:j.plan.outputPath,options:j.plan.options})));entry.expired ||=jobs.some(j=>j.requestJobCount!==undefined&&j.requestJobCount!==jobs.length)}
+    for(const entry of this.requests.values()){const jobs=entry.ids.map(id=>this.jobs.find(j=>j.id===id)!);entry.fingerprint ||=this.fingerprint(jobs.flatMap(j=>j.plan.kind==='asr'?[]:[{inputPath:j.plan.input.path,outputPath:j.plan.outputPath,options:j.plan.options}]));entry.expired ||=jobs.some(j=>j.requestJobCount!==undefined&&j.requestJobCount!==jobs.length)}
   }
   private forget(jobs:Job[]):void{
     const keys=new Set(jobs.filter(j=>j.requestKey).map(j=>`${j.source}:${j.requestKey}`))
     for(const job of this.jobs)if(job.requestKey&&keys.has(`${job.source}:${job.requestKey}`))job.requestExpired=true
     this.rebuildRequests()
   }
-  private ownedLogPath(job:Job):string{if(!/^[a-f0-9-]{36}$/i.test(job.id))throw new Error('日志标识无效');return join(this.dataPath,'logs',`${job.id}.log`)}
-  private async cleanLogs(jobs:Job[]):Promise<void>{await Promise.all(jobs.map(job=>{try{return unlink(this.ownedLogPath(job)).catch(()=>{})}catch{return Promise.resolve()}}))}
+  private ownedLogPath(job:Job):string{if(!/^[a-f0-9-]{36}$/i.test(job.id))throw new Error('日志标识无效');return join(this.artifactRoot?.(job.plan)??this.dataPath,'logs',`${job.id}.log`)}
+  private async cleanLogs(jobs:Job[]):Promise<void>{await Promise.all(jobs.map(async job=>{try{await unlink(this.ownedLogPath(job)).catch(()=>{});if(job.plan.kind==='asr')await cleanAsrArtifacts(this.artifactRoot?.(job.plan)??this.dataPath,job.id).catch(()=>{})}catch{}}))}
   private async persist(): Promise<void> {
-    const finished=this.jobs.filter(j=>isFinishedJob(j)&&!this.children.has(j.id)).sort((a,b)=>(a.finishedAt??a.createdAt).localeCompare(b.finishedAt??b.createdAt))
+    const finished=this.jobs.filter(j=>isFinishedJob(j)&&!this.children.has(j.id)&&!this.asrControls.has(j.id)).sort((a,b)=>(a.finishedAt??a.createdAt).localeCompare(b.finishedAt??b.createdAt))
     const removed=finished.slice(0,Math.max(0,finished.length-HISTORY_LIMIT)),ids=new Set(removed.map(j=>j.id))
     const previous=this.jobs,expired=new Map(previous.map(job=>[job,job.requestExpired]))
     if(ids.size){this.jobs=this.jobs.filter(j=>!ids.has(j.id));this.forget(removed)}
@@ -256,12 +343,13 @@ export class JobQueue extends EventEmitter {
       throw error
     }
     await this.cleanLogs(removed)
+    await this.persistArtifacts?.(this.jobs).catch(error=>this.emit('storage-error',`项目任务记录未保存：${(error as Error).message}`))
   }
   async deleteRecords(ids:string[]):Promise<number>{return this.exclusive(async()=>{
     if(this.paused)throw new Error('应用正在退出')
     const unique=[...new Set(ids)];if(!unique.length||unique.length>HISTORY_LIMIT)throw new Error('请选择 1–1000 条记录')
     const records=unique.map(id=>this.jobs.find(j=>j.id===id));if(records.some(j=>!j))throw new Error('部分记录已不存在，请刷新后再试')
-    if(records.some(j=>!isFinishedJob(j!)||this.children.has(j!.id)))throw new Error('只能删除已结束的任务记录；请先取消未完成任务')
+    if(records.some(j=>!isFinishedJob(j!)||this.children.has(j!.id)||this.asrControls.has(j!.id)))throw new Error('只能删除已结束的任务记录；请先取消未完成任务')
     const previous=this.jobs,expired=new Map(previous.map(job=>[job,job.requestExpired])),removed=records as Job[],set=new Set(unique)
     this.jobs=this.jobs.filter(j=>!set.has(j.id));this.forget(removed)
     try{await this.persist()}catch(error){this.jobs=previous;for(const [job,value] of expired)job.requestExpired=value;this.rebuildRequests();throw error}

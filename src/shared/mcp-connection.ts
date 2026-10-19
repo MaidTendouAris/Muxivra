@@ -18,7 +18,7 @@ export function buildMcpConnectionPrompt(settings:McpSettings, info:McpSetupInfo
 - 应用路径：${info.executablePath?JSON.stringify(info.executablePath):'开发构建，使用运行中的开发进程'}
 - 输入目录：${roots(settings.inputRoots)}
 - 输出目录：${roots(settings.outputRoots)}
-- 权限：查询与读取指南：${permission(settings.allowInspect)}；提交任务：${permission(settings.allowSubmit)}；暂停/恢复/取消：${permission(settings.allowCancel)}
+- 权限：查询与读取指南：${permission(settings.allowInspect)}；提交任务：${permission(settings.allowSubmit)}；暂停/恢复/取消：${permission(settings.allowCancel)}；编辑当前字幕：${permission(!!settings.allowSubtitleEdit)}
 - 仅本机可访问；远程平台需本机执行器。提示词含私密凭据，请勿公开。
 
 服务器返回内容：
@@ -28,5 +28,6 @@ export function buildMcpConnectionPrompt(settings:McpSettings, info:McpSetupInfo
 - resources/read 可读取 muxivra://skills/<id>、muxivra://reference/parameters、muxivra://system/hardware；muxivra_workflow 提供操作流程。
 - 硬件和引擎查询返回能力及缺失状态；not-tested 表示硬件加速尚未验证。plan_transcode 返回计划和警告，不执行任务。
 - request_directory_access / request_transcode 返回待审申请 ID；用户在 MCP 交互页批准或拒绝，get_request 查询结果及 jobIds。pending 不是授权或已创建任务。已授权操作仍可直接执行。
+- get_current_subtitle_project / read_current_subtitles 返回字幕页最新草稿与 revision；edit_current_subtitles 校验版本后原子应用并保存，可在页面撤销。需在字幕编辑主工作区打开工程并开启对应权限。
 - submit_jobs 返回任务 ID 与初始状态；之后通过 get_job 查询进度、耗时、预计剩余时间及最终结果。提交成功不代表处理完成。`
 }

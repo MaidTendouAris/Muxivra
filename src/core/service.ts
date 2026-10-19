@@ -1,7 +1,8 @@
+import { parseAsrParameters,asrPrecisionIssue } from '../shared/asr-parameters'
 import { EventEmitter } from 'node:events'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { join,basename } from 'node:path'
-import { readFile, writeFile, stat, realpath, mkdir, access } from 'node:fs/promises'
+import { join,basename,dirname,extname } from 'node:path'
+import { readFile, writeFile, stat, realpath, mkdir, access,copyFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import type { Engine, Job, JobRequest, Settings, Snapshot, Source, Preset, SubtitleDocument, DownloadState } from '../shared/types'
 import { settingsSchema, requestSchema, presetSchema, subtitleSchema, presetFileSchema } from '../shared/schema'
@@ -16,22 +17,35 @@ import { JobQueue } from './jobs/queue'
 import { HardwareStore } from './hardware'
 import { UsageMonitor } from './hardware/usage'
 import { builtInPresets } from './presets'
-import { exportSubtitleText, subtitleExportLosses } from './subtitles/ass'
+import { exportSubtitleText, subtitleExportLosses,parseSubtitleText,serializeAss } from './subtitles/ass'
 import { SubtitleProjectStore } from './subtitles/project'
+import { McpSubtitleEditor } from './mcp/subtitles'
+import { decodeSubtitle } from './subtitles/project'
+import { ProjectManager } from './projects'
+import { projectImportSchema,projectVideoExportSchema,type ProjectVideoExport,type ProjectImportRequest } from '../shared/projects'
 import type { SubtitleExportFormat } from '../shared/subtitles'
 import { makeWaveform } from './media/waveform'
+import { waveformRequestSchema,type WaveformRequest,type WaveformWindow } from '../shared/waveform'
 import { migrateLegacyShortcuts } from '../shared/shortcuts'
 import { McpRequestStore } from './mcp/requests'
 import type { DirectoryAccessRequest, TranscodeApprovalRequest, McpRequest } from '../shared/mcp-requests'
+import { AsrModels } from './asr/models'
+import { executeAsr,readAsrResult,readAsrRaw,asrResultPath } from './asr/runner'
+import { asrOptionsSchema,type AsrOptions,type AsrImportRequest } from '../shared/asr'
+import type { SubtitleMediaTransfer } from '../shared/subtitle-media'
 
 interface Configuration { settings: Settings; engine?: Engine; engines: Engine[]; presets: Preset[]; defaultOutputRoot?:string; shortcutsVersion?: number }
 export class MediaService extends EventEmitter {
+  systemLanguages:string[]=[]
   readonly paths = new PathPolicy()
   readonly queue: JobQueue
   readonly hardware: HardwareStore
   readonly usage:UsageMonitor
+  readonly asrModels:AsrModels
+  readonly mcpSubtitles:McpSubtitleEditor
   private configStore: JsonStore<Configuration>
-  readonly subtitleProjects: SubtitleProjectStore
+  readonly projects: ProjectManager
+  get subtitleProjects():SubtitleProjectStore{return this.projects.subtitles}
   private requestStore: McpRequestStore
   private configuration!: Configuration
   private configOperations: Promise<unknown> = Promise.resolve()
@@ -39,16 +53,25 @@ export class MediaService extends EventEmitter {
   private downloadActive = false
   private downloadController?: AbortController
   private background = new AbortController()
+  private waveformController?:AbortController
+  private waveformTask?:Promise<WaveformWindow>
+  private waveformCache=new Map<string,WaveformWindow>()
   private backgroundTasks = new Set<Promise<unknown>>()
   private notice?: string
   private defaultMcpOutputRoot?: string
   mcpState: Snapshot['mcp'] = { running: false }
   beforeSaveSettings?: (settings: Settings) => Promise<void>
-  constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string) {
+  constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string,projectsRoot?:string,asrAdapterPath?:string,asrInstallationDirectory?:string) {
     super(); this.queue = new JobQueue(dataPath); this.hardware=new HardwareStore(dataPath,()=>this.emit('update')); this.configStore = new JsonStore(join(dataPath,'config.json'))
-    this.subtitleProjects = new SubtitleProjectStore(dataPath, this.paths, () => this.emit('update'))
+    this.projects = new ProjectManager(projectsRoot??join(defaultOutputPath?dirname(defaultOutputPath):dataPath,'projects'),dataPath,this.paths,()=>this.emit('update'))
+    this.mcpSubtitles=new McpSubtitleEditor(()=>this.settings.mcp,()=>({projectId:this.projects.active()?.id,documentId:this.subtitleProjects.get()?.id}))
     this.requestStore = new McpRequestStore(join(dataPath,'mcp-requests.json'), () => this.emit('update'))
     this.usage=new UsageMonitor(()=>this.hardware.info,hardwareWorkerPath)
+    this.asrModels=new AsrModels(dataPath,()=>this.emit('update'),asrAdapterPath,asrInstallationDirectory??(defaultOutputPath?dirname(defaultOutputPath):dataPath))
+    this.queue.artifactRoot=plan=>plan.projectId?this.projects.artifactRoot(plan.projectId):this.dataPath
+    this.queue.validateArtifacts=async plan=>{if(plan.projectId)await this.projects.validate(plan.projectId)}
+    this.queue.asrExecutor=async(job,context)=>{if(job.plan.projectId)await this.projects.validate(job.plan.projectId);return executeAsr(this.queue.artifactRoot!(job.plan),job,context)}
+    this.queue.persistArtifacts=jobs=>this.projects.persistJobRecords(jobs)
     this.queue.on('update',() => this.emit('update'))
     this.queue.on('storage-error',message => { this.notice = message; this.emit('update') })
   }
@@ -82,6 +105,8 @@ export class MediaService extends EventEmitter {
       catch(error) { this.notice = `默认输出目录不可写：${this.defaultOutputPath}。请选择其他输出目录。${(error as Error).message}` }
     }
     await this.configStore.write(this.configuration)
+    await this.asrModels.initialize()
+    await this.projects.initialize()
     await this.queue.initialize()
     await this.requestStore.initialize(async request => {
       if (request.kind === 'directory') {
@@ -93,7 +118,6 @@ export class MediaService extends EventEmitter {
       return jobs.length === request.payload.requests.length && jobs.every(job => job.requestFingerprint === fingerprint && job.requestJobCount === request.payload.requests.length && !job.requestExpired) ? { jobIds: jobs.map(job => job.id) } : undefined
     })
     await this.hardware.initialize()
-    await this.subtitleProjects.initialize()
     this.queue.concurrency = this.configuration.settings.concurrency
     this.queue.start()
   }
@@ -104,7 +128,7 @@ export class MediaService extends EventEmitter {
   }
   get settings(): Settings { return structuredClone(this.configuration.settings) }
   get engine(): Engine { if (!this.configuration.engine) throw new Error('未配置 FFmpeg，请前往设置选择或下载引擎'); return structuredClone(this.configuration.engine) }
-  snapshot(): Snapshot { return structuredClone({ engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, mcpRequests: this.requestStore.counts(), subtitleProject: this.subtitleProjects.state(), notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing }) }
+  snapshot(): Snapshot { return structuredClone({ systemLanguages:this.systemLanguages, engine: this.configuration.engine, engines: this.configuration.engines, jobs: this.queue.list(true), presets: [...builtInPresets,...this.configuration.presets], settings: this.configuration.settings, download: this.download, mcp: this.mcpState, mcpRequests: this.requestStore.counts(), subtitleProject: this.subtitleProjects.state(), notice: this.notice, dataPath: this.dataPath, enginePath: this.enginePath, defaultOutputPath:this.defaultOutputPath,defaultMcpOutputPath:this.defaultMcpOutputRoot,hardware:this.hardware.info,hardwareRefreshing:this.hardware.refreshing,asr:this.asrModels.state(),projects:this.projects.state() }) }
   private roots(source: Source, output = false): string[] | undefined { return source === 'mcp' ? (output ? this.settings.mcp.outputRoots : this.settings.mcp.inputRoots) : undefined }
   private permission(source: Source, action: 'allowInspect' | 'allowSubmit' | 'allowCancel'): void { if (source === 'mcp' && (!this.settings.mcp.enabled || !this.settings.mcp[action])) throw new Error('此 MCP 操作未获授权，请检查设置') }
   async inspect(input: string, source: Source = 'gui') { this.permission(source,'allowInspect'); return inspectMedia(this.engine,await this.paths.input(input,this.roots(source))) }
@@ -120,7 +144,9 @@ export class MediaService extends EventEmitter {
     const target = await availableOutput(output,reserved,parsed.options.conflict === 'number')
     if(parsed.options.subtitleFile){const path=await this.paths.input(parsed.options.subtitleFile,this.roots(source));if(!/\.(srt|ass|ssa)$/i.test(path)||(await stat(path)).size>10*1024*1024)throw new Error('烧录字幕需要不超过 10 MB 的 SRT/ASS/SSA 文件');parsed.options.subtitleFile=path}
     await validateComponentOptions(this.engine,parsed.options)
-    return buildPlan(this.engine,await inspectMedia(this.engine,input),target,parsed.options)
+    const plan=buildPlan(this.engine,await inspectMedia(this.engine,input),target,parsed.options)
+    plan.projectId=this.projects.forMedia(input)?.id
+    return plan
   }
   async submit(requests: JobRequest[], source: Source = 'gui', key?: string): Promise<Job[]> {
     this.permission(source,'allowSubmit')
@@ -207,7 +233,7 @@ export class MediaService extends EventEmitter {
   async moveJob(id:string,direction:'up'|'down'|'first'|'last',source:Source='gui'):Promise<void>{this.permission(source,'allowSubmit');await this.authorizedJob(id,source);const allowed=source==='mcp'?new Set((await this.jobs(source)).map(j=>j.id)):undefined;await this.queue.move(id,direction,allowed)}
   systemHardware(source:Source='gui') {this.permission(source,'allowInspect');return {hardware:structuredClone(this.hardware.info),engine:this.configuration.engine?{version:this.configuration.engine.version,encoders:this.configuration.engine.encoders,decoders:this.configuration.engine.decoders,filters:this.configuration.engine.filters}:undefined,accelerationValidation:'not-tested',note:'引擎列出的编解码器不代表当前设备可用；硬件加速需实际试编码确认。显存优先采用 NVIDIA 驱动物理容量，其余采用 DXGI 系统可用容量；来源与缺失信息逐项标记。'}}
   async refreshHardware():Promise<void>{await this.track(this.hardware.refresh())}
-  async retry(id: string): Promise<Job> { const job = await this.job(id); if (!['failed','cancelled','interrupted'].includes(job.status)) throw new Error('仅失败、取消或中断的任务可重试'); await this.paths.grantFile(job.plan.input.path); if(job.plan.options.subtitleFile)await this.paths.grantFile(job.plan.options.subtitleFile); await this.paths.grantDirectory(join(job.plan.outputPath,'..')); return (await this.submit([{ inputPath: job.plan.input.path, outputPath: job.plan.outputPath, options: job.plan.options }]))[0] }
+  async retry(id: string): Promise<Job> { const job = await this.job(id); if (!['failed','cancelled','interrupted'].includes(job.status)) throw new Error('仅失败、取消或中断的任务可重试'); await this.paths.grantFile(job.plan.input.path); if(job.plan.kind==='asr')return this.asrSubmit(job.plan.asr.options);if(job.plan.options.subtitleFile)await this.paths.grantFile(job.plan.options.subtitleFile); await this.paths.grantDirectory(join(job.plan.outputPath,'..')); return (await this.submit([{ inputPath: job.plan.input.path, outputPath: job.plan.outputPath, options: job.plan.options }]))[0] }
   async detect(): Promise<Engine | undefined> { const engine = await detectEngine(); if (engine) await this.activate(engine); return engine }
   async selectEngine(pathOrId: string): Promise<Engine> {
     const known = this.configuration.engines.find(e => e.id === pathOrId)
@@ -268,13 +294,78 @@ export class MediaService extends EventEmitter {
     const data=presetFileSchema.parse({format:'muxivra-presets',version:1,presets})
     await writeFile(await this.paths.output(output),JSON.stringify(data,null,2)+'\n',{flag:'wx'})
   }
-  async openSubtitleMedia(input: string, projectPath?: string): Promise<SubtitleDocument> { return this.subtitleProjects.openMedia(input, projectPath) }
-  async readSubtitles(input: string, projectPath?: string): Promise<SubtitleDocument> { return this.subtitleProjects.import(input, projectPath) }
-  async saveSession(document: SubtitleDocument): Promise<void> { await this.subtitleProjects.cache(document) }
-  async getSession(): Promise<SubtitleDocument | undefined> { return this.subtitleProjects.get() }
-  async saveSubtitleProject(document: SubtitleDocument): Promise<SubtitleDocument> { return (await this.subtitleProjects.save(document))! }
-  async saveSubtitleProjectAs(document: SubtitleDocument, path: string): Promise<SubtitleDocument> { return this.subtitleProjects.saveAs(document, path) }
-  async deleteSubtitleProject(documentId: string): Promise<SubtitleDocument> { return this.subtitleProjects.deleteProject(documentId) }
+  async importProject(request:ProjectImportRequest){
+    const value=projectImportSchema.parse(request),path=await this.paths.input(value.path)
+    const info=this.configuration.engine?await this.inspect(path):undefined
+    if(info&&!info.streams.some(s=>s.type==='video'||s.type==='audio'))throw new Error('请选择视频或音频文件')
+    let subtitle:{name:string;content:Buffer;document:SubtitleDocument}|undefined
+    if(value.subtitlePath){
+      const source=await this.paths.input(value.subtitlePath),format=extname(source).slice(1).toLowerCase()
+      if(!['ass','ssa','srt'].includes(format)||(await stat(source)).size>10*1024*1024)throw new Error('初始字幕需要不超过 10 MB 的 ASS、SSA 或 SRT 文件')
+      const content=await readFile(source);if(content.length>10*1024*1024)throw new Error('字幕文件超过 10 MB')
+      subtitle={name:basename(source),content,document:parseSubtitleText(decodeSubtitle(content),format as SubtitleExportFormat)}
+    }
+    const video=info?.streams.find(s=>s.type==='video'),resolution=value.resolutionMode==='custom'?value.resolution:value.resolutionMode==='auto'&&video?.width&&video.height?{width:video.width,height:video.height}:undefined
+    const result=await this.projects.importMedia(path,value.deleteOriginal,false,{name:value.name,subtitle,resolution,exportFormat:value.exportFormat})
+    if(result.warning)this.notice=result.warning;return result
+  }
+  async openProject(id:string){return this.projects.open(id)}
+  async closeProject(id:string){this.waveformController?.abort();await this.waveformTask?.catch(()=>{});await this.projects.close(id)}
+  async archiveProject(id:string){
+    if(this.queue.jobs.some(j=>j.plan.projectId===id&&['queued','running','paused'].includes(j.status)))throw new Error('项目仍有未结束任务，请先取消或完成任务')
+    this.waveformController?.abort();await this.waveformTask?.catch(()=>{})
+    const result=await this.projects.archive(id);this.paths.files.forEach(path=>{if(path.toLowerCase().startsWith(this.projects.state().items.find(p=>p.id===id)!.directory.toLowerCase()))this.paths.files.delete(path)});return result
+  }
+  async duplicateProject(){const current=this.subtitleProjects.get(),project=this.projects.active();if(!project||!current)throw new Error('请先打开项目');await this.subtitleProjects.cache(current);const copy=await this.projects.importMedia(project.mediaPath,false,true);return this.saveSubtitleProject({...current,id:copy.document.id,mediaPath:copy.document.mediaPath,projectPath:copy.document.projectPath,sourcePath:undefined})}
+  async openSubtitleMedia(input: string, _projectPath?: string): Promise<SubtitleDocument> {
+    const path=await this.paths.input(input),project=this.projects.forMedia(path)
+    if(project)return this.projects.open(project.id)
+    throw new Error('请先在项目管理中创建项目，再打开已有工程')
+  }
+  async asrImport(request:AsrImportRequest){return this.track(this.asrModels.import(request))}
+  async asrSubmit(input:AsrOptions):Promise<Job>{
+    const options=asrOptionsSchema.parse(input),model=this.asrModels.get(options.modelId),media=await this.inspect(options.inputPath),project=this.projects.forMedia(media.path)
+    if(!project)throw new Error('请先将媒体导入项目，再提交 ASR 识别')
+    options.parameters=parseAsrParameters(model.backend,options.parameters)
+    const precisionIssue=asrPrecisionIssue(model.backend,options.parameters,options.device);if(precisionIssue)throw new Error(precisionIssue)
+    if(model.availability!=='ready')throw new Error(model.issue??'模型或环境不可用')
+    if(model.backend==='qwen3-asr'&&options.parameters.timestamps&&!model.environment?.alignerPath)throw new Error('请在运行环境中指定 Qwen3-ForcedAligner，再启用时间戳')
+    if(!media.streams.some(s=>s.type==='audio'&&s.index===options.audioStream))throw new Error('请选择媒体中存在的音轨')
+    if(!media.durationMs||options.startMs>=media.durationMs||options.endMs!==undefined&&options.endMs<=options.startMs)throw new Error('识别区间无效')
+    const id=randomUUID(),end=Math.min(options.endMs??media.durationMs,media.durationMs)
+    return this.queue.submitAsr({kind:'asr',projectId:project.id,input:media,outputPath:asrResultPath(project.directory,id),engine:this.engine,args:[],warnings:[],durationMs:end-options.startMs,asr:{model,options:{...options,inputPath:media.path}}},id)
+  }
+  async asrResult(id:string){const job=await this.job(id);return readAsrResult(this.queue.artifactRoot!(job.plan),job)}
+  async asrRaw(id:string,index:number){const job=await this.job(id);return readAsrRaw(this.queue.artifactRoot!(job.plan),job,index)}
+  async readSubtitles(input: string, _projectPath?: string): Promise<SubtitleDocument> {
+    const project=this.projects.active(),current=this.subtitleProjects.get();if(!project||!current)throw new Error('请先导入媒体或打开项目，再导入字幕')
+    const source=await this.paths.input(input),extension=extname(source).slice(1).toLowerCase();if(!['ass','ssa','srt'].includes(extension))throw new Error('请选择 ASS、SSA 或 SRT 字幕')
+    if((await stat(source)).size>10*1024*1024)throw new Error('字幕文件超过 10 MB')
+    const parsed=parseSubtitleText(decodeSubtitle(await readFile(source)),extension as SubtitleExportFormat),directory=join(project.directory,'imports');await mkdir(directory,{recursive:true})
+    const target=await availableOutput(join(directory,basename(source)),new Set(),true);await copyFile(source,target,constants.COPYFILE_EXCL)
+    return this.saveSubtitleProject({...parsed,id:current.id,mediaPath:current.mediaPath,projectPath:current.projectPath,sourcePath:current.sourcePath})
+  }
+  async saveSession(document:SubtitleDocument):Promise<void>{await this.projects.cache(document)}
+  async getSession():Promise<SubtitleDocument|undefined>{return this.projects.active()?this.subtitleProjects.get():undefined}
+  async saveSubtitleProject(document:SubtitleDocument):Promise<SubtitleDocument>{const next=await this.projects.save(document);if(!next)throw new Error('字幕工程已切换，旧编辑请求已停止');return next}
+  async prepareSubtitleMedia(input:SubtitleDocument):Promise<SubtitleMediaTransfer>{
+    const document=subtitleSchema.parse(input),project=this.projects.active(),current=this.subtitleProjects.get()
+    if(!project||!current||document.id!==current.id||document.projectPath!==project.subtitlePath)throw new Error('请打开当前字幕工程后再转到单文件处理')
+    const saved=await this.saveSubtitleProject(document),outputDirectory=join(project.directory,'exports');await mkdir(outputDirectory,{recursive:true});await this.paths.grantDirectory(outputDirectory)
+    const subtitlePath=join(outputDirectory,`subtitle-${randomUUID()}.ass`);await writeFile(subtitlePath,serializeAss(saved),{flag:'wx'});await this.paths.grantFile(subtitlePath)
+    return {id:randomUUID(),projectId:project.id,projectName:project.name,media:await this.inspectPlayback(project.mediaPath),subtitlePath,outputDirectory}
+  }
+  async saveSubtitleProjectAs(document: SubtitleDocument, _path?: string): Promise<SubtitleDocument> {await this.subtitleProjects.cache(document);return this.duplicateProject()}
+  async deleteSubtitleProject(documentId: string): Promise<SubtitleDocument> {if(this.subtitleProjects.get()?.id!==documentId)throw new Error('当前工程已切换');return this.archiveProject(this.projects.active()!.id)}
+  async exportProjectVideo(input:ProjectVideoExport,output:string):Promise<Job>{
+    const options=projectVideoExportSchema.parse(input),project=this.projects.active(),document=this.subtitleProjects.get();if(!project||!document)throw new Error('请先打开项目')
+    if(!document.cues.some(c=>!c.comment&&c.text.trim()&&c.endMs>c.startMs))throw new Error('项目没有有效字幕')
+    const saved=await this.saveSubtitleProject(document),directory=join(project.directory,'exports');await mkdir(directory,{recursive:true});await this.paths.grantDirectory(directory)
+    const subtitle=join(directory,`subtitle-${randomUUID()}.ass`);await writeFile(subtitle,serializeAss(saved),{flag:'wx'});await this.paths.grantFile(subtitle)
+    const video=options.mode==='embed'?'copy':options.video
+    const jobs=await this.submit([{inputPath:project.mediaPath,outputPath:output,options:{container:options.container,video,audio:options.audio,quality:options.quality,speed:options.speed,audioBitrate:192,subtitles:'none',conflict:'number',subtitleFile:subtitle,subtitleMode:options.mode}}])
+    return jobs[0]
+  }
   subtitleExportLosses(document: SubtitleDocument, format: SubtitleExportFormat): string[] { return subtitleExportLosses(subtitleSchema.parse(document), format) }
   async exportSubtitles(document: SubtitleDocument, output: string, format: SubtitleExportFormat = 'srt'): Promise<void> {
     const doc = subtitleSchema.parse(document)
@@ -284,6 +375,20 @@ export class MediaService extends EventEmitter {
     await writeFile(target, exportSubtitleText(doc, format), { flag: 'wx' })
   }
   private track<T>(task: Promise<T>): Promise<T> { this.backgroundTasks.add(task); void task.finally(() => this.backgroundTasks.delete(task)).catch(() => {}); return task }
-  async waveform(input: string): Promise<number[]> { const media = await this.inspect(input); return this.track(makeWaveform(this.engine,media,this.background.signal)) }
-  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.subtitleProjects.shutdown(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush() }
+  async waveform(input:string,options:Partial<WaveformRequest>={}):Promise<WaveformWindow> {
+    const request=waveformRequestSchema.parse(options)
+    this.waveformController?.abort();const controller=new AbortController();this.waveformController=controller
+    const signal=AbortSignal.any([controller.signal,this.background.signal])
+    const task=this.track((async()=>{
+      const media=await this.inspect(input);if(signal.aborted)throw new Error('波形读取已取消')
+      const file=await stat(media.path),key=JSON.stringify([this.engine.ffmpegPath,media.path,file.size,file.mtimeMs,request])
+      const cached=this.waveformCache.get(key);if(cached){this.waveformCache.delete(key);this.waveformCache.set(key,cached);return cached}
+      const wave=await makeWaveform(this.engine,media,request,signal)
+      if(signal.aborted)throw new Error('波形读取已取消')
+      this.waveformCache.set(key,wave);while(this.waveformCache.size>32)this.waveformCache.delete(this.waveformCache.keys().next().value!)
+      return wave
+    })());this.waveformTask=task
+    try{return await task}finally{if(this.waveformTask===task)this.waveformTask=undefined}
+  }
+  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.asrModels.shutdown(); await this.projects.shutdown(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush() }
 }
