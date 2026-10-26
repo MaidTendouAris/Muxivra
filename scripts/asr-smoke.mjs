@@ -16,7 +16,7 @@ await writeFile(join(root,'worker.cjs'),`let input='';process.stdin.setEncoding(
 await mkdir(join(root,'model'));await writeFile(join(root,'model','weights.bin'),'protocol fixture data')
 await writeFile(manifest,JSON.stringify({format:'muxivra-asr-backend',version:1,name:'UI protocol model',executable:process.execPath,args:[join(root,'worker.cjs')],modelPath:'model'}))
 await writeFile(source.replace('.wav','.ass'),'[Script Info]\nScriptType: v4.00+\nTitle: ASR smoke project\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:00.30,Default,,0,0,0,,原有字幕\n')
-const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
+const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
 let page
 try{
   await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message))

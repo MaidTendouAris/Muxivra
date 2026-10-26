@@ -13,7 +13,7 @@ await mkdir(output)
 await exec('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24','-f','lavfi','-i','sine=frequency=440','-t','5','-c:v','libx264','-c:a','aac',input],{windowsHide:true})
 await writeFile(lyrics,'[00:00.50]First line\n[00:02.00]第二句\n')
 const original=await readFile(input),report={errors:[],layouts:[]}
-const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
+const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
 let page
 try{
   await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',e=>report.errors.push(e.message))

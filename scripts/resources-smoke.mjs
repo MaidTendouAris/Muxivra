@@ -14,7 +14,7 @@ await writeFile(manifestPath, JSON.stringify({ format: 'muxivra-asr-backend', ve
 await mkdir(join(profile, 'asr'), { recursive: true })
 await writeFile(join(profile, 'asr', 'models.json'), JSON.stringify({ version: 1, models: [{ id: '22222222-2222-4222-8222-222222222222', name: 'Fixture Qwen model', backend: 'qwen3-asr', modelPath, executable: process.execPath, args: [], sampleRate: 16000, channels: 1, importedAt: new Date().toISOString(), environmentId: fixtureEnvironment.id }], runtimes: [], environments: [fixtureEnvironment] }))
 const report = { errors: [], layouts: [], realModelInference: false, syntheticEnvironmentProbe: true }
-const desktop = await electron.launch({ executablePath: process.env.MUXIVRA_EXECUTABLE || electronPath, args: process.env.MUXIVRA_EXECUTABLE ? [] : ['.'], cwd: process.cwd(), env: { ...process.env, MUXIVRA_SMOKE: '1', MUXIVRA_DATA_PATH: profile, MUXIVRA_ENGINE_PATH: join(root, 'engines') }, timeout: 60000 })
+const desktop = await electron.launch({ executablePath: process.env.MUXIVRA_EXECUTABLE || electronPath, args: process.env.MUXIVRA_EXECUTABLE ? [] : ['.'], cwd: process.cwd(), env: { ...process.env, MUXIVRA_SMOKE: '1', MUXIVRA_TEST_SYSTEM_LANGUAGES: 'zh-CN', MUXIVRA_DATA_PATH: profile, MUXIVRA_ENGINE_PATH: join(root, 'engines') }, timeout: 60000 })
 let page
 try {
   page = await desktop.firstWindow()
