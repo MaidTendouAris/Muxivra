@@ -1,11 +1,12 @@
 import { createHash,randomUUID } from 'node:crypto'
 import { createReadStream,createWriteStream,constants } from 'node:fs'
-import { access,lstat,mkdir,readdir,realpath,rename,rm,stat,statfs } from 'node:fs/promises'
+import { access,lstat,mkdir,readdir,realpath,rm,stat,statfs } from 'node:fs/promises'
 import { basename,dirname,join,resolve } from 'node:path'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { isWithin,localPath } from '../media/paths'
 import type { AsrDownload } from '../../shared/asr'
+import { atomicRename } from '../storage/atomic'
 export type StorageProgress=(update:Partial<AsrDownload>)=>void
 export async function writableStorage(root:string){
   try{await mkdir(root,{recursive:true});const canonical=await realpath(root);if(canonical.toLowerCase()!==resolve(root).toLowerCase())throw new Error('存储目录包含重定向或符号链接');await access(canonical,constants.W_OK)}
@@ -36,7 +37,7 @@ export async function copyModel(source:string,root:string,label:string,signal:Ab
       set({phase:'verifying',message:`校验 ${file.relative}`});if(after.size!==file.size||after.mtimeMs!==file.mtimeMs||await hashFile(output,'sha256',undefined,signal)!==hash.digest('hex'))throw new Error(`模型复制校验失败：${file.relative}，源文件可能正在修改`)
       set({phase:'copying'})
     }
-    signal.throwIfAborted();await mkdir(dirname(target),{recursive:true});await rename(staging,target);return {path:directory?target:join(target,basename(input)),bytes}
+    signal.throwIfAborted();await mkdir(dirname(target),{recursive:true});await atomicRename(staging,target,async()=>signal.throwIfAborted());return {path:directory?target:join(target,basename(input)),bytes}
   }finally{await ownedCleanup(root,staging)}
 }
 export function asrProcessEnvironment(root?:string):NodeJS.ProcessEnv {return {...process.env,PYTHONDONTWRITEBYTECODE:'1',...(root?{HF_HOME:join(root,'cache','huggingface'),HF_HUB_CACHE:join(root,'cache','huggingface','hub'),HUGGINGFACE_HUB_CACHE:join(root,'cache','huggingface','hub'),TRANSFORMERS_CACHE:join(root,'cache','huggingface','hub'),HF_ASSETS_CACHE:join(root,'cache','huggingface','assets'),TORCH_HOME:join(root,'cache','torch'),TORCH_EXTENSIONS_DIR:join(root,'cache','torch-extensions'),TORCHINDUCTOR_CACHE_DIR:join(root,'cache','torchinductor'),CUDA_CACHE_PATH:join(root,'cache','cuda'),PIP_CACHE_DIR:join(root,'cache','pip'),XDG_CACHE_HOME:join(root,'cache'),TRITON_CACHE_DIR:join(root,'cache','triton'),HF_DATASETS_CACHE:join(root,'cache','datasets'),NUMBA_CACHE_DIR:join(root,'cache','numba'),MPLCONFIGDIR:join(root,'cache','matplotlib'),GRADIO_TEMP_DIR:join(root,'temp','gradio'),TEMP:join(root,'temp'),TMP:join(root,'temp')}:{}),PYTHONIOENCODING:'utf-8'}}

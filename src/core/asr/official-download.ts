@@ -1,6 +1,6 @@
 import { createHash,randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir,readFile,rename,writeFile } from 'node:fs/promises'
+import { mkdir,readFile,writeFile } from 'node:fs/promises'
 import { dirname,join } from 'node:path'
 import { Readable,Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -9,6 +9,7 @@ import type { OfficialAsrAsset } from '../../shared/asr-catalog'
 import { requireSpace,ownedCleanup,type StorageProgress } from './storage'
 import { fetchDownload,explainDownloadError,canUseDownloadFallback } from '../download-network'
 import modelscopeManifests from './modelscope-manifests.json'
+import { atomicRename } from '../storage/atomic'
 const entrySchema=z.object({rfilename:z.string().min(1).max(1024),size:z.number().int().nonnegative().max(40*1024**3),blobId:z.string().regex(/^[a-f0-9]{40}$/),lfs:z.object({sha256:z.string().regex(/^[a-f0-9]{64}$/),size:z.number().int().nonnegative()}).optional()})
 const manifestSchema=z.object({sha:z.string().regex(/^[a-f0-9]{40}$/),siblings:z.array(entrySchema).max(2000)})
 type OfficialFile=z.infer<typeof entrySchema>&{modelscopeRevision?:string}
@@ -63,6 +64,6 @@ export async function downloadOfficialModel(asset:OfficialAsrAsset,root:string,s
     }
     const index=files.find(f=>f.rfilename==='model.safetensors.index.json');if(index){const data=JSON.parse(await readFile(join(staging,index.rfilename),'utf8'));for(const name of Object.values(data.weight_map??{}))if(typeof name!=='string'||!files.some(f=>f.rfilename===name))throw new Error('官方模型缺少分片权重')}
     await writeFile(join(staging,'muxivra-download-source.json'),JSON.stringify({repo:asset.repo,revision:asset.revision,source,files:sources,reason,checkedAt:new Date().toISOString()},null,2))
-    signal.throwIfAborted();await mkdir(dirname(target),{recursive:true});await rename(staging,target);return {path:target,bytes:total}
+    signal.throwIfAborted();await mkdir(dirname(target),{recursive:true});await atomicRename(staging,target,async()=>signal.throwIfAborted());return {path:target,bytes:total}
   }finally{await ownedCleanup(root,staging)}
 }
