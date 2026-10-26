@@ -4,13 +4,14 @@ import { downloadSourcesSchema,type DownloadSources } from '../shared/download-s
 import { AnalysisCache } from './media/analysis-cache'
 import { indexVideo } from './media/video-timing'
 import { prepareProjectAnalysis,readProjectVideoTiming,readProjectWaveform } from './media/project-analysis'
+import { ensureProjectFonts } from './media/project-fonts'
 import { videoTimingSchema,type VideoTiming } from '../shared/video-timing'
 import { subtitleToolsSchema,type SubtitleToolsState } from '../shared/subtitle-tools'
 import { parseAsrParameters,asrPrecisionIssue } from '../shared/asr-parameters'
 import { EventEmitter } from 'node:events'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { join,basename,dirname,extname } from 'node:path'
-import { readFile, writeFile, stat, realpath, mkdir, access,copyFile } from 'node:fs/promises'
+import { readFile, writeFile, stat, realpath, mkdir, access,copyFile,unlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import type { Engine, Job, JobRequest, Settings, Snapshot, Source, Preset, SubtitleDocument, DownloadState } from '../shared/types'
 import { settingsSchema, requestSchema, presetSchema, subtitleSchema, presetFileSchema } from '../shared/schema'
@@ -22,6 +23,8 @@ import { buildPlan } from './media/plan'
 import { editedDeliveryArgs,deliveryDuration } from './media/delivery'
 import { formatCommand } from '../shared/delivery-command'
 import { inspectMedia } from './media/probe'
+import { run as runEngine } from './engine/process'
+import { inputFormatWhitelist } from '../shared/media-policy'
 import { detectEngine, verifyEngine, installEngine, managedEngines } from './engine'
 import { JobQueue } from './jobs/queue'
 import { HardwareStore } from './hardware'
@@ -79,7 +82,7 @@ export class MediaService extends EventEmitter {
   constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string,projectsRoot?:string,asrAdapterPath?:string,asrInstallationDirectory?:string) {
     super(); this.queue = new JobQueue(dataPath); this.hardware=new HardwareStore(dataPath,()=>this.emit('update')); this.configStore = new JsonStore(join(dataPath,'config.json'))
     this.projects = new ProjectManager(projectsRoot??join(defaultOutputPath?dirname(defaultOutputPath):dataPath,'projects'),dataPath,this.paths,()=>this.emit('update'))
-    this.projects.prepareMedia=async(path,directory,signal,progress,options)=>{const media=await this.inspect(path);if(!media.streams.some(stream=>stream.type==='audio'||stream.type==='video'))throw new Error('请选择视频或音频文件');await prepareProjectAnalysis(this.engine,media,directory,signal,progress,options)}
+    this.projects.prepareMedia=async(path,directory,signal,progress,options)=>{const media=await this.inspect(path);if(!media.streams.some(stream=>stream.type==='audio'||stream.type==='video'))throw new Error('请选择视频或音频文件');progress('读取项目字体',0);await ensureProjectFonts(this.engine,path,directory,signal);await prepareProjectAnalysis(this.engine,media,directory,signal,(phase,percent)=>progress(phase,5+percent*.95),options)}
     this.mcpSubtitles=new McpSubtitleEditor(()=>this.settings.mcp,()=>({projectId:this.projects.active()?.id,documentId:this.subtitleProjects.get()?.id}))
     this.downloadSources=new DownloadSourceStore(join(dataPath,'download-sources.json'),()=>this.emit('update'))
     this.mcpActivity=new McpActivityStore(join(dataPath,'mcp-activity'),()=>this.emit('update'))
@@ -187,8 +190,10 @@ export class MediaService extends EventEmitter {
     const target = await availableOutput(output,reserved,parsed.options.conflict === 'number')
     if(parsed.options.subtitleFile){const path=await this.paths.input(parsed.options.subtitleFile,this.roots(source));if(!/\.(srt|ass|ssa)$/i.test(path)||(await stat(path)).size>10*1024*1024)throw new Error('烧录字幕需要不超过 10 MB 的 SRT/ASS/SSA 文件');parsed.options.subtitleFile=path}
     await validateComponentOptions(this.engine,parsed.options)
-    const plan=buildPlan(this.engine,await inspectMedia(this.engine,input),target,parsed.options)
-    plan.projectId=this.projects.forMedia(input)?.id
+    const media=await inspectMedia(this.engine,input),project=this.projects.forMedia(input)
+    const subtitleFontsDirectory=project&&parsed.options.subtitleFile&&parsed.options.subtitleMode!=='embed'?await ensureProjectFonts(this.engine,input,project.directory,this.background.signal):undefined
+    const plan=buildPlan(this.engine,media,target,parsed.options,{subtitleFontsDirectory})
+    plan.projectId=project?.id
     return plan
   }
   async submit(requests: JobRequest[], source: Source = 'gui', key?: string): Promise<Job[]> {
@@ -369,6 +374,36 @@ export class MediaService extends EventEmitter {
     if(result.warning)this.notice=result.warning;return result
   }
   async openProject(id:string){return this.projects.open(id)}
+  async importProjectSubtitle(id:string,input:string):Promise<SubtitleDocument>{
+    const project=this.projects.active(),current=this.subtitleProjects.get()
+    if(!project||project.id!==id||!current)throw new Error('请先打开目标项目，再导入字幕')
+    const path=await this.paths.input(input),extension=extname(path).slice(1).toLowerCase()
+    if(!['ass','ssa','srt'].includes(extension)||(await stat(path)).size>10*1024*1024)throw new Error('请选择不超过 10 MB 的 ASS、SSA 或 SRT 字幕')
+    const content=await readFile(path);if(content.length>10*1024*1024)throw new Error('字幕文件超过 10 MB')
+    let document=parseSubtitleText(decodeSubtitle(content),extension as SubtitleExportFormat)
+    if(extension==='srt')document={...document,scriptInfo:{...document.scriptInfo,...Object.fromEntries(['PlayResX','PlayResY'].flatMap(key=>current.scriptInfo?.[key]!==undefined?[[key,current.scriptInfo[key]]]:[]))}}
+    return this.projects.importSubtitle(id,{name:basename(path),content,document})
+  }
+  async projectEmbeddedSubtitles(id:string){
+    const project=this.projects.get(id);await this.projects.validate(id)
+    const media=await this.inspect(project.mediaPath)
+    return media.streams.filter(stream=>stream.type==='subtitle'&&['ass','ssa','subrip','mov_text','webvtt','text'].includes(stream.codec)).map(({index,codec,language,title})=>({index,codec,language,title}))
+  }
+  async importEmbeddedProjectSubtitle(id:string,index:number):Promise<SubtitleDocument>{
+    if(!Number.isInteger(index)||index<0)throw new Error('字幕轨道无效')
+    return this.projects.importSubtitle(id,async project=>{
+      const track=(await this.projectEmbeddedSubtitles(id)).find(track=>track.index===index)
+      if(!track)throw new Error('请选择项目媒体中存在的文本字幕轨道')
+      const temporary=join(project.directory,`.subtitle-extract-${randomUUID()}.ass`)
+      try{
+        await runEngine(this.engine.ffmpegPath,['-v','error','-nostdin','-protocol_whitelist','file,pipe','-format_whitelist',inputFormatWhitelist,'-i',project.mediaPath,'-map',`0:${index}`,'-c:s',track.codec==='ass'?'copy':'ass','-f','ass',temporary],{timeout:120000,signal:this.background.signal})
+        if((await stat(temporary)).size>10*1024*1024)throw new Error('字幕轨道超过 10 MB')
+        const content=await readFile(temporary),document=parseSubtitleText(decodeSubtitle(content),'ass')
+        const label=[track.language,track.title].filter(Boolean).join('-').replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').slice(0,100)
+        return {name:`track-${index}${label?'-'+label:''}.ass`,content,document}
+      }finally{await unlink(temporary).catch(()=>{})}
+    })
+  }
   async rebuildProjectAnalysis(id:string){
     if(this.queue.jobs.some(job=>job.plan.projectId===id&&['queued','running','paused'].includes(job.status)))throw new Error('项目仍有未结束任务，请先取消或完成任务再重新预处理')
     this.frameController?.abort();await this.frameTask?.catch(()=>{});this.waveformController?.abort();await this.waveformTask?.catch(()=>{})
@@ -427,7 +462,7 @@ export class MediaService extends EventEmitter {
     const saved=await this.saveSubtitleProject(document),directory=join(project.directory,'exports');await mkdir(directory,{recursive:true});await this.paths.grantDirectory(directory)
     const subtitle=join(directory,`subtitle-${randomUUID()}.ass`);await writeFile(subtitle,serializeAss(saved),{flag:'wx'});await this.paths.grantFile(subtitle)
     const video=options.mode==='embed'?'copy':options.video
-    const jobs=await this.submit([{inputPath:project.mediaPath,outputPath:output,options:{container:options.container,video,audio:options.audio,quality:options.quality,speed:options.speed,audioBitrate:192,subtitles:'none',conflict:'number',subtitleFile:subtitle,subtitleMode:options.mode}}])
+    const jobs=await this.submit([{inputPath:project.mediaPath,outputPath:output,options:{container:options.container,video,audio:options.audio,quality:options.quality,speed:options.speed,audioBitrate:192,subtitles:'none',conflict:'number',subtitleFile:subtitle,subtitleMode:options.mode,...(options.mode==='embed'&&options.container==='mkv'?{advanced:{attachments:'copy'}}:{})}}])
     return jobs[0]
   }
   subtitleExportLosses(document: SubtitleDocument, format: SubtitleExportFormat): string[] { return subtitleExportLosses(subtitleSchema.parse(document), format) }

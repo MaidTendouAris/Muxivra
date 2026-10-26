@@ -106,6 +106,9 @@ export interface MuxivraApi {
   duplicateProject():Promise<SubtitleDocument>
   selectProjectSubtitle(projectId:string,subtitleId:string):Promise<SubtitleDocument>
   createProjectSubtitle(projectId:string,name?:string):Promise<SubtitleDocument>
+  importProjectSubtitle(projectId:string,path:string):Promise<SubtitleDocument>
+  projectEmbeddedSubtitles(projectId:string):Promise<{index:number;codec:string;language?:string;title?:string}[]>
+  importEmbeddedProjectSubtitle(projectId:string,index:number):Promise<SubtitleDocument>
   renameProjectSubtitle(projectId:string,subtitleId:string,name:string):Promise<SubtitleDocument>
   deleteProjectSubtitle(projectId:string,subtitleId:string):Promise<SubtitleDocument>
   exportProjectVideo(request:import('./projects').ProjectVideoExport):Promise<Job|undefined>

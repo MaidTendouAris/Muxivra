@@ -126,6 +126,11 @@ jobs:
           npm run smoke:player-composition
           if ($LASTEXITCODE -ne 0) { throw 'GPU texture lifecycle verification failed.' }
 
+      - name: Verify existing-project subtitle imports and lifecycle
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: npm run smoke:project-lifecycle
+
       - name: Verify MCP source approvals, history and subtitle selection
         env:
           MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe

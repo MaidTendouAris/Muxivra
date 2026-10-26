@@ -66,6 +66,20 @@ describe('ASS document codecs',()=>{
     expect(saved.cues[0].extra).toEqual({Vendor:'event'})
     expect(saved.styles[0].extra).toEqual({Vendor:'style'})
   })
+  it('keeps layered opening effects, subset font names and karaoke as opaque ASS text in source order',()=>{
+    const opening='{\\fnSUBSET42\\an7\\org(960,540)\\pos(320.5,80)\\frx12\\fry-30\\frz6\\fax0.2\\blur0.8\\1c&HFAFBF7&\\alpha&H60&\\t(0,450,1.2,\\alpha&H00&\\fscx120)\\clip(1,m 0 0 l 150 0 150 60 0 60)\\p1}m 0 0 b 15 20 40 20 60 0{\\p0}{\\k15}Ka{\\kf30}ra{\\ko45}oke\\hword\\nsoft\nsecond line'
+    const document=createSubtitleDocument({styles:[defaultSubtitleStyle({name:'OP - JP',fontName:'SUBSET42',spacing:1.5,outline:2.2})],cues:[
+      {id:'effect',startMs:126030,endMs:126780,text:opening,layer:8,style:'OP - JP',name:'singer',effect:'karaoke'},
+      {id:'background',startMs:126030,endMs:126780,text:'{\\move(0,0,100,100,0,750)\\p1}m 0 0 l 20 0 20 20 0 20',layer:7,style:'OP - JP'},
+      {id:'note',startMs:0,endMs:1000,text:'effect source note',comment:true,style:'OP - JP'}
+    ]})
+    const saved=parseAss(serializeAss(document))
+    expect(saved.cues.map(({id,...cue})=>cue)).toEqual(document.cues.map(({id,...cue})=>cue))
+    expect(saved.styles.find(style=>style.name==='OP - JP')).toEqual(document.styles.find(style=>style.name==='OP - JP'))
+    expect(saved.cues[0].text).toBe(opening)
+    expect(subtitleSchema.parse(saved)).toEqual(saved)
+    expect(subtitleExportLosses(saved,'ass')).toEqual([])
+  })
   it('accepts existing case-variant style names and canonicalizes standard script keys',()=>{
     const document=createSubtitleDocument({styles:[defaultSubtitleStyle({name:'default',fontSize:24})],scriptInfo:{playresx:'1280',playresy:'720',scripttype:'v4.00+',title:'Case'}})
     expect(document.styles.some(style=>style.name==='default')).toBe(true)

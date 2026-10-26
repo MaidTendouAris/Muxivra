@@ -1,4 +1,5 @@
 import { createProject } from './gui-projects.mjs'
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
 import { mkdir,mkdtemp,writeFile,readFile,rm } from 'node:fs/promises'
@@ -13,7 +14,11 @@ await writeFile(join(profile,'empty-subtitle-workspace','subtitle-session.json')
 await promisify(execFile)('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=440','-t','2',audio],{windowsHide:true})
 await writeFile(subtitle,'1\n00:00:00,123 --> 00:00:01,234\nInitial project subtitle\n')
 const original=await readFile(audio)
-const launch=()=>electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
+const launch=async()=>{
+  const instance=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
+  await installHeadlessTextureFixture(instance)
+  return instance
+}
 let desktop=await launch(),page
 try{
   page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));report.version=await desktop.evaluate(({app})=>app.getVersion())
@@ -35,8 +40,16 @@ try{
   assert.equal(await page.getByRole('button',{name:'关闭工程',exact:true}).count(),0);await nav('项目管理');await page.locator('.project-card').filter({hasText:'Second project'}).getByRole('button',{name:'关闭工程',exact:true}).click();await wait(async()=>!await session());assert.ok((await readFile(b.subtitlePath,'utf8')).includes('Saved on close'))
   await page.locator('.project-card').filter({hasText:'Second project'}).getByRole('button',{name:'编辑字幕',exact:true}).click();await wait(()=>page.getByLabel('字幕文本',{exact:true}).inputValue().then(v=>v==='Saved on close'))
   await nav('项目管理');await page.locator('.project-card').filter({hasText:'Second project'}).getByRole('button',{name:'项目文件',exact:true}).click()
+  const beforeSubtitleImport=await readFile(b.subtitlePath,'utf8'),beforeImportSession=await session()
+  await desktop.evaluate(({dialog})=>{dialog.showOpenDialog=async()=>({canceled:true,filePaths:[]})})
+  await page.getByRole('button',{name:'导入字幕',exact:true}).click();await wait(()=>page.getByRole('button',{name:'导入字幕',exact:true}).isEnabled());assert.equal((await session()).id,beforeImportSession.id)
+  await desktop.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]})},join(root,'missing.srt'))
+  await page.getByRole('button',{name:'导入字幕',exact:true}).click();await page.locator('.project-details-page [role="alert"]').waitFor();await wait(()=>page.getByRole('button',{name:'导入字幕',exact:true}).isEnabled());assert.equal((await session()).id,beforeImportSession.id);assert.equal(await readFile(b.subtitlePath,'utf8'),beforeSubtitleImport)
   await desktop.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]})},subtitle)
-  await page.getByRole('button',{name:'导入字幕',exact:true}).click();await wait(async()=>(await session())?.cues[0]?.text==='Initial project subtitle');await nav('字幕编辑');await wait(()=>page.getByLabel('字幕文本',{exact:true}).inputValue().then(v=>v==='Initial project subtitle'));await page.waitForTimeout(1000);assert.equal((await session()).cues[0].text,'Initial project subtitle')
+  await page.getByRole('button',{name:'导入字幕',exact:true}).click();await wait(async()=>(await session())?.cues[0]?.text==='Initial project subtitle')
+  const afterSubtitleImport=(await page.evaluate(()=>window.muxivra.snapshot())).projects.items.find(project=>project.id===b.id)
+  assert.equal(afterSubtitleImport.subtitles.length,2);assert.notEqual(afterSubtitleImport.subtitlePath,b.subtitlePath);assert.match(afterSubtitleImport.subtitlePath,/\.ass$/i);assert.equal(await readFile(b.subtitlePath,'utf8'),beforeSubtitleImport);await wait(()=>page.getByLabel('当前字幕文件',{exact:true}).innerText().then(value=>value===afterSubtitleImport.subtitles.find(file=>file.id===afterSubtitleImport.activeSubtitleId).name))
+  await page.getByRole('button',{name:'编辑字幕',exact:true}).click();await wait(()=>page.getByLabel('字幕文本',{exact:true}).inputValue().then(v=>v==='Initial project subtitle'));await page.waitForTimeout(1000);assert.equal((await session()).cues[0].text,'Initial project subtitle')
   await nav('ASR 工作台');assert.equal(await page.getByRole('button',{name:'选择媒体',exact:true}).count(),0);assert.equal(await page.getByRole('button',{name:'打开工程',exact:true}).count(),0);assert.equal(await page.getByRole('button',{name:'关闭工程',exact:true}).count(),0);await nav('项目管理');if(await page.getByRole('button',{name:'返回项目管理',exact:true}).count())await page.getByRole('button',{name:'返回项目管理',exact:true}).click();await page.locator('.project-card').filter({hasText:'Second project'}).getByRole('button',{name:'关闭工程',exact:true}).click();await wait(async()=>!await session());await nav('字幕编辑');await nav('项目管理')
   if(await page.getByRole('button',{name:'返回项目管理',exact:true}).count())await page.getByRole('button',{name:'返回项目管理',exact:true}).click()
   await page.locator('.project-card').filter({hasText:'Second project'}).getByRole('button',{name:'项目文件',exact:true}).click()
@@ -48,7 +61,7 @@ try{
   await desktop.close();desktop=await launch();page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   assert.equal((await session()).cues[0].text,'Managed changes at shutdown')
   assert.deepEqual(await readFile(audio),original);assert.equal(await page.locator('.toast-error').count(),0);assert.deepEqual(report.errors,[])
-  report.result={copyPreservesExternalChanges:true,hiddenEditorCannotOverwriteOnQuit:true,customCreationOptions:true,legacyBlankIgnored:true,deleteThenNavigateAndCreate:true,lateCacheIgnored:true,closeSavesDraft:true,reopenPreservesDraft:true,projectLifecycleOnlyInProjectManagement:true,managedImportRefreshesEditor:true,asrExistingOnly:true,sourcePreserved:true}
+  report.result={copyPreservesExternalChanges:true,hiddenEditorCannotOverwriteOnQuit:true,customCreationOptions:true,legacyBlankIgnored:true,deleteThenNavigateAndCreate:true,lateCacheIgnored:true,closeSavesDraft:true,reopenPreservesDraft:true,projectLifecycleOnlyInProjectManagement:true,managedImportRefreshesEditor:true,subtitleImportAddsAssTrack:true,subtitleImportCancelAndFailurePreserveSession:true,subtitleImportPreservesExistingTrack:true,asrExistingOnly:true,sourcePreserved:true}
   await writeFile('artifacts/qa/project-lifecycle-smoke.json',JSON.stringify(report,null,2));console.log('Project lifecycle smoke passed')
 }catch(error){report.failure=error.stack;report.screen=await page?.locator('body').innerText().catch(()=>undefined);await page?.screenshot({path:'artifacts/qa/project-lifecycle-failed.png'}).catch(()=>{});await writeFile('artifacts/qa/project-lifecycle-failed.json',JSON.stringify(report,null,2));throw error}
 finally{await desktop.close();const inside=relative(resolve('.test-data'),root);if(!inside||inside==='..'||inside.startsWith(`..${sep}`)||isAbsolute(inside))throw new Error('Unsafe cleanup');await rm(root,{recursive:true,force:true})}

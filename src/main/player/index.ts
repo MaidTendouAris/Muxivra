@@ -1,16 +1,16 @@
 import { app, type BrowserWindow } from 'electron'
 import { EventEmitter } from 'node:events'
 import { randomUUID, createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, stat, unlink, link, copyFile } from 'node:fs/promises'
+import { readFile, mkdir, stat, unlink, link, copyFile } from 'node:fs/promises'
 import { createReadStream, constants } from 'node:fs'
 import { join, basename,resolve } from 'node:path'
 import { MpvIpc } from '../../core/player/ipc'
 import { CompositedPlayerSurface } from './surface'
 import { inputFormatWhitelist } from '../../shared/media-policy'
-import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerRect, type PlayerAction, type PlayerEvent, type PlayerTrack } from '../../shared/player'
+import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerRect, type PlayerAction, type PlayerEvent } from '../../shared/player'
 import type { MediaService } from '../../core/service'
 import type { MediaInfo, SubtitleDocument } from '../../shared/types'
-import { serializeAss } from '../../core/subtitles/ass'
+import { updateEditorSubtitles } from './subtitles'
 import { defaultShortcuts, mpvShortcutBindings, shortcutBindingsSchema,waveformShortcutIds, type ShortcutBindings } from '../../shared/shortcuts'
 
 const properties=['pause','time-pos','duration','volume','mute','speed','track-list','playlist','playlist-pos','path','media-title','video-params','video-out-params','aid','sid','audio-delay','sub-delay','loop-file','loop-playlist','ab-loop-a','ab-loop-b','eof-reached']
@@ -58,7 +58,9 @@ class PlayerSession extends EventEmitter {
     const input=app.isPackaged?join(process.resourcesPath,'mpv-input.conf'):join(app.getAppPath(),'resources/mpv-input.conf')
     // Force local container demuxing; mpv's playlist parsers and network protocols are excluded.
     const options=`protocol_whitelist=[file,pipe],format_whitelist=[${inputFormatWhitelist}]`
-    await this.surface.start(library,{'config':'no','load-scripts':'no','ytdl':'no','osc':'no','osd-level':'0','idle':'yes','force-window':'no','keep-open':'yes','pause':'yes','volume':'50','hwdec':'auto-safe','vo':'libmpv','sub-auto':'no','audio-file-auto':'no','autoload-files':'no','demuxer':'lavf','demuxer-lavf-o':options,'input-default-bindings':'no','input-terminal':'no','input-conf':input,'input-ipc-server':pipe,'terminal':'no','msg-level':'all=warn'})
+    // External editor ASS shares the loaded container's font attachments.
+    // Keep script styles, positioning, effects and video layout data intact.
+    await this.surface.start(library,{'config':'no','load-scripts':'no','ytdl':'no','osc':'no','osd-level':'0','idle':'yes','force-window':'no','keep-open':'yes','pause':'yes','volume':'50','hwdec':'auto-safe','vo':'libmpv','sub-auto':'no','embeddedfonts':'yes','sub-ass-override':'no','sub-ass-use-video-data':'all','audio-file-auto':'no','autoload-files':'no','demuxer':'lavf','demuxer-lavf-o':options,'input-default-bindings':'no','input-terminal':'no','input-conf':input,'input-ipc-server':pipe,'terminal':'no','msg-level':'all=warn'})
     this.abort.signal.throwIfAborted()
     await this.ipc.connect(pipe,this.abort.signal)
     await this.ipc.command(['request_log_messages','warn'])
@@ -231,13 +233,8 @@ export class MpvPlayers extends EventEmitter {
     session.editorDocument=structuredClone(document)
     if(!session.state.path||session.state.loading)return
     await session.execute(async()=>{
-      const cues=document.cues.filter(cue=>cue.text.trim()&&cue.endMs>cue.startMs)
-      if(!cues.length){if(session.editorTrack)await session.command(['sub-remove',session.editorTrack]);session.editorTrack=undefined;return}
       const project=this.service.projects.forMedia(document.mediaPath??'')
-      const directory=join(project?.directory??this.service.dataPath,'player-subtitles');await mkdir(directory,{recursive:true})
-      const path=join(directory,`${owner}.ass`);await writeFile(path,serializeAss({...document,cues}))
-      if(session.editorTrack)await session.command(['sub-reload',session.editorTrack])
-      else {await session.command(['sub-add',path,'select','编辑字幕']);const tracks:PlayerTrack[]=await session.command(['get_property','track-list']);session.editorTrack=tracks.find(track=>track['external-filename']===path)?.id}
+      await updateEditorSubtitles(session,join(project?.directory??this.service.dataPath,'player-subtitles',`${owner}.ass`),document)
     })
   }
   async screenshot(owner:PlayerOwner,target:string):Promise<string> {

@@ -11,7 +11,7 @@ const imageFormats = new Set(['png','jpg','webp','gif'])
 // Escape the AVOption value, then the enclosing filtergraph. Arguments go directly to spawn, with no shell layer.
 export const escapeFilterValue = (value:string) => value.replace(/[\\':]/g,c=>'\\'+c).replace(/[\\'[\],;]/g,c=>'\\'+c)
 function filterText(name:string,options:Record<string,string>):string {const pairs=Object.entries(options).map(([key,value])=>`${key}=${escapeFilterValue(value)}`);return name+(pairs.length?'='+pairs.join(':'):'')}
-export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, inputOptions: TranscodeOptions): Plan {
+export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, inputOptions: TranscodeOptions,context:{subtitleFontsDirectory?:string}={}): Plan {
   const options = optionsSchema.parse(inputOptions) as TranscodeOptions, a=options.advanced??{}
   const embed=!!options.subtitleFile&&options.subtitleMode==='embed'
   if(embed&&!['mp4','mkv','mov'].includes(options.container))throw new Error('外挂字幕封装仅支持 MP4、MOV 或 MKV')
@@ -119,7 +119,7 @@ export function buildPlan(engine: Engine, media: MediaInfo, outputPath: string, 
           if(!options.subtitleFile){const sub=media.streams.filter(s=>s.type==='subtitle')[Number(a.burnSubtitle)];if(!sub||!['subrip','ass','ssa','mov_text','webvtt','text'].includes(sub.codec))throw new Error('烧录字幕需要存在的文本字幕轨道（按字幕轨从 0 编号）')}
           const color=(value:unknown)=>typeof value==='string'?`&H00${value.slice(5,7)}${value.slice(3,5)}${value.slice(1,3)}`:undefined
           const style=[['FontName',a.subtitleFont],['FontSize',a.subtitleSize],['Outline',a.subtitleOutline],['MarginV',a.subtitleMargin],['MarginL',a.subtitleMarginL],['MarginR',a.subtitleMarginR],['Spacing',a.subtitleSpacing],['Shadow',a.subtitleShadow],['Alignment',a.subtitleAlignment],['Bold',a.subtitleBold===undefined?undefined:a.subtitleBold==='on'?-1:0],['Italic',a.subtitleItalic===undefined?undefined:a.subtitleItalic==='on'?-1:0],['BorderStyle',a.subtitleBorder===undefined?undefined:a.subtitleBorder==='box'?3:1],['PrimaryColour',color(a.subtitleColor)],['OutlineColour',color(a.subtitleOutlineColor)],['BackColour',color(a.subtitleBackColor)]].filter(([,v])=>v!==undefined).map(([k,v])=>`${k}=${v}`).join(',')
-          videoFilters.push(`subtitles=filename=${escapeFilterValue((options.subtitleFile??media.path).replace(/\\/g,'/'))}${options.subtitleFile?'':`:si=${a.burnSubtitle}`}${style?`:force_style=${escapeFilterValue(style)}`:''}`)
+          videoFilters.push(`subtitles=filename=${escapeFilterValue((options.subtitleFile??media.path).replace(/\\/g,'/'))}${options.subtitleFile?'':`:si=${a.burnSubtitle}`}${options.subtitleFile&&context.subtitleFontsDirectory?`:fontsdir=${escapeFilterValue(context.subtitleFontsDirectory.replace(/\\/g,'/'))}`:''}${style?`:force_style=${escapeFilterValue(style)}`:''}`)
         }
         for(const f of videoFilters)if(!engine.filters.includes(f.split(/[=:]/)[0]))throw new Error(`当前引擎缺少 ${f.split(/[=:]/)[0]} 滤镜`)
         if(videoFilters.length)args.push('-vf',videoFilters.join(','))

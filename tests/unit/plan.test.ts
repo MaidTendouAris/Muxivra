@@ -1,5 +1,5 @@
 import { describe,it,expect } from 'vitest'
-import { buildPlan } from '../../src/core/media/plan'
+import { buildPlan,escapeFilterValue } from '../../src/core/media/plan'
 import { defaultOptions } from '../../src/core/presets'
 import type { Engine,MediaInfo } from '../../src/shared/types'
 const engine:Engine={id:'test',ffmpegPath:'C:\\engine\\ffmpeg.exe',ffprobePath:'C:\\engine\\ffprobe.exe',version:'test',source:'local',encoders:['libx264','libx265','aac','srt'],decoders:[],filters:['scale'],detectedAt:''}
@@ -16,5 +16,13 @@ describe('共享参数生成',()=>{
     expect(plan.args.slice(plan.args.indexOf('-c:s'),plan.args.indexOf('-c:s')+2)).toEqual(['-c:s','copy'])
     expect(plan.args.slice(plan.args.indexOf('-c:s:1'),plan.args.indexOf('-c:s:1')+2)).toEqual(['-c:s:1','ass'])
     expect(plan.args.slice(plan.args.indexOf('-c:s:2'),plan.args.indexOf('-c:s:2')+2)).toEqual(['-c:s:2','ass']);expect(plan.args).not.toContain('-c:s:0')
+  })
+  it('only passes project font resources to external subtitle burn-in, with filtergraph escaping',()=>{
+    const fonts="C:\\projects\\fonts, 'special'\\attached",context={subtitleFontsDirectory:fonts},supported={...engine,filters:[...engine.filters,'subtitles'],encoders:[...engine.encoders,'ass']}
+    const options={...defaultOptions,subtitleFile:'C:\\projects\\edited.ass',subtitleMode:'burn' as const}
+    const plan=buildPlan(supported,media,'C:\\out\\burned.mp4',options,context)
+    expect(plan.args[plan.args.indexOf('-vf')+1]).toContain(`:fontsdir=${escapeFilterValue(fonts.replace(/\\/g,'/'))}`)
+    expect(buildPlan(supported,media,'C:\\out\\embedded.mkv',{...options,container:'mkv',video:'copy',audio:'copy',subtitleMode:'embed'},context).args.join(' ')).not.toContain('fontsdir=')
+    expect(buildPlan(supported,media,'C:\\out\\internal.mp4',{...defaultOptions,advanced:{burnSubtitle:0}},context).args.join(' ')).not.toContain('fontsdir=')
   })
 })

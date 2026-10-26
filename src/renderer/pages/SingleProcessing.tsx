@@ -56,7 +56,8 @@ export function Single({snapshot,run,busy,visible,onSubmitted,transfer,mode='vid
   function container(value:TranscodeOptions['container']){
     const images:Record<string,string>={png:'png',jpg:'mjpeg',gif:'gif',webp:'libwebp'}
     const codec=({mp3:'libmp3lame',flac:'flac',wav:'pcm_s16le',opus:'libopus',ogg:'libvorbis',webm:'libopus'} as Record<string,string>)[value]
-    update({...options,container:value,audio:images[value]?'none':codec??(options.audio==='none'?'aac':options.audio),...(images[value]?{video:images[value],subtitles:'none',subtitleFile:undefined}:value==='webm'?{video:'libvpx_vp9'}:Object.values(images).includes(options.video)?{video:'libx264'}:{})})
+    const advanced={...options.advanced};if(value!=='mkv')delete advanced.attachments
+    update({...options,container:value,advanced,audio:images[value]?'none':codec??(options.audio==='none'?'aac':options.audio),...(images[value]?{video:images[value],subtitles:'none',subtitleFile:undefined}:value==='webm'?{video:'libvpx_vp9'}:Object.values(images).includes(options.video)?{video:'libx264'}:{})})
   }
   return <div className={`processing-page processing-${mode}`}>
     <div className="processing-canvas">

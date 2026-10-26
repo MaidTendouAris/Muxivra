@@ -2,7 +2,12 @@ import { describe,it,expect } from 'vitest'
 import { subtitleTransferOptions,changeSubtitleMode } from '../../src/shared/subtitle-media'
 describe('subtitle handoff options',()=>{
   it('keeps the ASS snapshot and copies audio/video into MKV by default',()=>{
-    expect(subtitleTransferOptions('snapshot.ass')).toMatchObject({subtitleFile:'snapshot.ass',subtitleMode:'embed',container:'mkv',video:'copy',audio:'copy',subtitles:'none',conflict:'number'})
+    expect(subtitleTransferOptions('snapshot.ass')).toMatchObject({subtitleFile:'snapshot.ass',subtitleMode:'embed',container:'mkv',video:'copy',audio:'copy',subtitles:'none',conflict:'number',advanced:{attachments:'copy'}})
+  })
+  it('keeps attached fonts for MKV and clears attachment copying for MP4 or MOV',()=>{
+    const source=subtitleTransferOptions('snapshot.ass')
+    expect(changeSubtitleMode(source,'burn').advanced?.attachments).toBe('copy')
+    for(const container of ['mp4','mov'] as const)expect(changeSubtitleMode({...source,container},'embed').advanced?.attachments).toBeUndefined()
   })
   it('enables video encoding for burn-in and removes incompatible burn-only options for muxing',()=>{
     const source={...subtitleTransferOptions('snapshot.ass'),container:'webm' as const,advanced:{burnSubtitle:0,subtitleSize:20,subtitleFont:'Arial',start:2},presetId:'test'}

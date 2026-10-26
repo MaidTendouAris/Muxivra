@@ -13,6 +13,7 @@ import { SubtitleProjectStore } from '../subtitles/project'
 import { atomicRename } from '../storage/atomic'
 import { z } from 'zod'
 import { JobHistoryStore } from '../jobs/history'
+import { serializeAss } from '../subtitles/ass'
 
 const MANIFEST='project.json'
 interface Manifest { format:'muxivra-project';version:1;id:string;name:string;folder:string;mediaFile:string;subtitleFile:string;subtitleFiles?:{id:string;name:string}[];sourceName:string;mediaBytes:number;createdAt:string;updatedAt:string }
@@ -21,6 +22,7 @@ const assFilename=filename.refine(v=>extname(v).toLowerCase()==='.ass'&&!v.start
 const manifestSchema=z.object({format:z.literal('muxivra-project'),version:z.literal(1),id:z.string().uuid(),name:z.string().min(1).max(200),folder:filename.refine(v=>!v.startsWith('.')),mediaFile:filename,subtitleFile:assFilename,subtitleFiles:z.array(z.object({id:z.string().uuid(),name:assFilename}).strict()).min(1).max(200).optional(),sourceName:filename,mediaBytes:z.number().int().min(0),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict().refine(v=>!v.subtitleFiles||(v.subtitleFiles.some(s=>s.name===v.subtitleFile)&&new Set(v.subtitleFiles.map(s=>s.id)).size===v.subtitleFiles.length&&new Set(v.subtitleFiles.map(s=>s.name.toLowerCase())).size===v.subtitleFiles.length),'字幕文件列表无效')
 const progress=():ProjectsState['import']=>({active:false,name:'',phase:'',percent:0,transferred:0,total:0})
 interface InitialProject {name?:string;subtitle?:{name:string;content:Buffer;document:SubtitleDocument};resolution?:{width:number;height:number};exportFormat?:'ass'|'ssa'|'srt'}
+export interface ProjectSubtitleSource {name:string;content:Buffer;document:SubtitleDocument}
 const fileHash=async(path:string,signal?:AbortSignal)=>{const hash=createHash('sha256');for await(const chunk of createReadStream(path,{signal}))hash.update(chunk);return hash.digest('hex')}
 export class ProjectManager {
   /** Service-owned analysis runs on the verified project copy before publication. */
@@ -85,8 +87,9 @@ export class ProjectManager {
         const blank=await next.openManaged(project.mediaPath,project.subtitlePath)
         if(template)await next.save({...structuredClone(template),id:blank.id,mediaPath:blank.mediaPath,projectPath:blank.projectPath,sourcePath:undefined,cues:[],exportFormat:'ass'})
       }
+      await this.subtitles.shutdown()
       if(changed)await new JsonStore(join(project.directory,MANIFEST)).write(changed)
-      await this.subtitles.shutdown();this.subtitles=next;entry.manifest=manifest;entry.project=project;this.activeId=id;await this.pointer.write({id});this.update()
+      this.subtitles=next;entry.manifest=manifest;entry.project=project;this.activeId=id;await this.pointer.write({id});this.update()
       return this.subtitles.get()!
     }catch(error){if(this.subtitles!==next)await next.shutdown();throw error}
   }
@@ -105,6 +108,45 @@ export class ProjectManager {
     if(!chosen)throw new Error('同名字幕文件过多，请更换名称')
     const track={id:randomUUID(),name:chosen},manifest={...entry.manifest,subtitleFiles:[...tracks,track],subtitleFile:chosen,updatedAt:new Date().toISOString()}
     return this.activate(id,manifest,this.subtitles.get())
+  })}
+  importSubtitle(id:string,source:ProjectSubtitleSource|((project:MediaProject)=>Promise<ProjectSubtitleSource>)){return this.exclusive(async()=>{
+    const {entry,project}=this.editing(id),tracks=this.tracks(entry.manifest)
+    if(tracks.length>=200)throw new Error('每个项目最多包含 200 个字幕文件')
+    await this.safeDirectory(project.directory)
+    const imported=typeof source==='function'?await source(project):source
+    filename.parse(imported.name)
+    if(imported.content.length>10*1024*1024)throw new Error('字幕文件超过 10 MB')
+    const text=serializeAss({...imported.document,sourcePath:undefined,mediaPath:project.mediaPath,projectPath:undefined,exportFormat:'ass'})
+    if(Buffer.byteLength(text)>10*1024*1024)throw new Error('转换后的 ASS 超过 10 MB')
+    await this.subtitles.save();await this.safeDirectory(project.directory)
+    const imports=join(project.directory,'imports');await mkdir(imports,{recursive:true})
+    const importsInfo=await lstat(imports)
+    if(importsInfo.isSymbolicLink()||!importsInfo.isDirectory()||!isWithin(project.directory,await realpath(imports)))throw new Error('字幕导入目录已变化，已停止导入')
+    let original='',target='',chosen=''
+    const reserve=async(directory:string,name:string,data:Buffer|string)=>{
+      const stem=basename(name,extname(name)),extension=extname(name)
+      for(let i=0;i<10000;i++){
+        const candidate=i?`${stem} (${i+1})${extension}`:name
+        if(directory===project.directory&&tracks.some(track=>track.name.toLowerCase()===candidate.toLowerCase()))continue
+        const path=join(directory,candidate)
+        try{await writeFile(path,data,{flag:'wx'});return {path,name:candidate}}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error}
+      }
+      throw new Error('同名字幕文件过多，请更换名称')
+    }
+    try{
+      original=(await reserve(imports,imported.name,imported.content)).path
+      const published=await reserve(project.directory,this.subtitleName(basename(imported.name,extname(imported.name))),text)
+      target=published.path;chosen=published.name
+      const track={id:randomUUID(),name:chosen},manifest={...entry.manifest,subtitleFiles:[...tracks,track],subtitleFile:chosen,updatedAt:new Date().toISOString()}
+      return await this.activate(id,manifest)
+    }catch(error){
+      // Never remove a track already published by activate, even if pointer persistence fails.
+      if(!chosen||entry.manifest.subtitleFile!==chosen){
+        if(target&&await fileHash(target).catch(()=>undefined)===createHash('sha256').update(text).digest('hex'))await unlink(target).catch(()=>{})
+        if(original&&await fileHash(original).catch(()=>undefined)===createHash('sha256').update(imported.content).digest('hex'))await unlink(original).catch(()=>{})
+      }
+      throw error
+    }
   })}
   renameSubtitle(id:string,subtitleId:string,name:string){return this.exclusive(async()=>{
     const {entry,project}=this.editing(id),tracks=this.tracks(entry.manifest),track=tracks.find(s=>s.id===subtitleId)

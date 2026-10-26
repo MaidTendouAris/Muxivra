@@ -251,6 +251,9 @@ function registerIpc(): void {
     return service.archiveProject(id)
   }
   handle('importProject',request=>service.importProject(projectImportSchema.parse(request)))
+  handle('importProjectSubtitle',(id,path)=>service.importProjectSubtitle(z.string().uuid().parse(id),pathSchema.parse(path)))
+  handle('projectEmbeddedSubtitles',id=>service.projectEmbeddedSubtitles(z.string().uuid().parse(id)))
+  handle('importEmbeddedProjectSubtitle',(id,index)=>service.importEmbeddedProjectSubtitle(z.string().uuid().parse(id),z.number().int().min(0).max(10000).parse(index)))
   handle('cancelProjectImport',()=>service.projects.cancelImport())
   handle('rebuildProjectAnalysis',id=>service.rebuildProjectAnalysis(z.string().uuid().parse(id)))
   handle('openProject',id=>service.openProject(z.string().uuid().parse(id)))

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-export async function createProject(page,desktop,source,{subtitle,deleteOriginal=false,name,resolution,format,target='subtitles'}={}) {
+export async function createProject(page,desktop,source,{subtitle,deleteOriginal=false,name,resolution,format,target='subtitles',creationTimeout=60000}={}) {
   await page.locator('.navigation').getByRole('button',{name:'项目管理',exact:true}).click()
   await page.getByRole('button',{name:'新建项目',exact:true}).click()
   const pick=file=>desktop.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]})},file)
@@ -15,7 +15,7 @@ export async function createProject(page,desktop,source,{subtitle,deleteOriginal
   await page.getByLabel('创建后打开',{exact:true}).click()
   await page.getByRole('option',{name:target==='subtitles'?'字幕编辑':target==='asr'?'ASR 工作台':'留在项目管理',exact:true}).click()
   await page.getByRole('button',{name:'创建项目',exact:true}).click()
-  await page.locator('.project-create-page').waitFor({state:'hidden',timeout:60000})
+  await page.locator('.project-create-page').waitFor({state:'hidden',timeout:creationTimeout})
   const snapshot=await page.evaluate(()=>window.muxivra.snapshot())
   const project=snapshot.projects.items.find(p=>p.id===snapshot.projects.activeId)
   assert.ok(project,'Creation must activate the new managed project')

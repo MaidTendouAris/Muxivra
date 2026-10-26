@@ -24,7 +24,7 @@ it('hands saved subtitle snapshots to real single-file MKV/MP4 muxing and burn-i
     const keep=(await service.submit([{...request,outputPath:join(transfer.outputDirectory,'keep.mkv'),options:{...options,subtitles:'copy'}}]))[0];await finish(service,keep.id)
     expect((await service.inspect(keep.plan.outputPath)).streams.filter(s=>s.type==='subtitle').map(s=>s.codec)).toEqual(['ass','ass'])
     const originalText=await run(service.engine.ffmpegPath,['-v','error','-i',keep.plan.outputPath,'-map','0:s:0','-f','srt','pipe:1']);expect(originalText).toContain('Original subtitle')
-    const mp4Options={...options,container:'mp4' as const},mp4=(await service.submit([{...request,outputPath:join(transfer.outputDirectory,'text.mp4'),options:mp4Options}]))[0]
+    const mp4Options=changeSubtitleMode({...options,container:'mp4'},'embed'),mp4=(await service.submit([{...request,outputPath:join(transfer.outputDirectory,'text.mp4'),options:mp4Options}]))[0]
     expect(mp4.plan.warnings.some(w=>w.includes('样式'))).toBe(true);await finish(service,mp4.id);expect((await service.inspect(mp4.plan.outputPath)).streams.find(s=>s.type==='subtitle')?.codec).toBe('mov_text')
     const burned=(await service.submit([{...request,outputPath:join(transfer.outputDirectory,'burned.mkv'),options:changeSubtitleMode(options,'burn')}]))[0]
     await finish(service,burned.id);expect((await service.inspect(burned.plan.outputPath)).streams.some(s=>s.type==='subtitle')).toBe(false);expect(burned.plan.args.join(' ')).toContain('subtitles=filename=')
