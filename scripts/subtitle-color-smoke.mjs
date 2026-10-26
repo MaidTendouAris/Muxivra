@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import assert from 'node:assert/strict'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
@@ -27,7 +28,7 @@ const setHex=async value=>{await modal().getByLabel('HEX',{exact:true}).fill(val
 const toAss=(hex,alpha)=>'&H'+alpha.toString(16).padStart(2,'0').toUpperCase()+hex.slice(5,7).toUpperCase()+hex.slice(3,5).toUpperCase()+hex.slice(1,3).toUpperCase()
 try{
   desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
-  page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1440,1000));report.version=await desktop.evaluate(({app})=>app.getVersion())
+  await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1440,1000));report.version=await desktop.evaluate(({app})=>app.getVersion())
   await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   await page.locator('.navigation').getByRole('button',{name:'项目管理',exact:true}).click();await page.getByRole('button',{name:'新建项目',exact:true}).click();assert.equal(await page.getByRole('heading',{name:'项目预处理',exact:true}).count(),0,'Remove explanatory preprocessing card from creation');await page.getByRole('button',{name:'取消',exact:true}).click()
   const project=await createProject(page,desktop,video,{subtitle});await page.getByLabel('字幕文本',{exact:true}).waitFor();await until(()=>session().then(value=>value?.cues.length===2),'Imported subtitles cached')

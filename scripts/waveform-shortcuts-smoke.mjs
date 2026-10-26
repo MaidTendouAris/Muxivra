@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import assert from 'node:assert/strict'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
@@ -13,7 +14,7 @@ await promisify(execFile)('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=s=1
 let desktop,page,success=false
 const report={checks:[],errors:[]}
 const until=async(check,label='Waveform shortcut state')=>{const end=Date.now()+30000;while(Date.now()<end){if(await check())return;await new Promise(resolve=>setTimeout(resolve,50))}throw new Error(label+' timed out')}
-const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000});await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1440,1000))}
+const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000});await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1440,1000))}
 const settings=()=>page.evaluate(()=>window.muxivra.snapshot()).then(snapshot=>snapshot.settings)
 const player=()=>page.evaluate(()=>window.muxivra.playerState('subtitles'))
 // Exercise the actual native mpv input -> main process -> renderer bridge.

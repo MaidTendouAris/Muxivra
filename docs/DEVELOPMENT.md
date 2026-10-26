@@ -130,3 +130,9 @@ node scripts/asr-official-validation.mjs 读取四个官方固定版本清单，
 `npm run smoke:subtitle-mcp` uses real HTTP MCP against the Electron editor, including unsaved input, translation, ASS effects/styles, insertion, atomic errors, undo, permissions and page/project scope. `MUXIVRA_EXECUTABLE` selects the packaged application.
 
 `npm run smoke:asr-progress` uses existing isolated Qwen/MOSS environments and official models, records native telemetry and checks single-call results. Optional `MUXIVRA_QWEN_MODEL_PATH` reads an existing Qwen 1.7B directory for a separate 10-second validation. Tests write only inside the workspace test profile; the external model and source media are preserved.
+
+## 云端与真实 GPU 测试
+
+GitHub 托管 Windows 环境没有可用的 Chromium GPU 共享纹理导入设备。云端界面测试显式启用 `CI=true`、`MUXIVRA_HEADLESS_TEXTURE_TEST=1`，使用仅存在于 scripts 的接收端夹具回收 libmpv 已渲染的帧；真实 libmpv 的解码、音轨和播放控制仍执行，但不向 Chromium 传输视频像素。夹具不会打包进应用，并在验收报告中明确标记未验证 GPU 导入及像素。
+
+`npm run smoke:player` 和 `npm run smoke:player-composition` 必须在有真实 GPU 的 Windows 设备运行，且不设置上述夹具变量。不能用云端 UI 通过替代实际 GPU 纹理、遮罩合成和资源生命周期验收。

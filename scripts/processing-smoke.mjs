@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
 import { mkdir,mkdtemp,readFile,writeFile,rm,stat } from 'node:fs/promises'
@@ -15,7 +16,7 @@ const original=await readFile(input),report={errors:[],layouts:[]}
 const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
 let page
 try{
-  page=await desktop.firstWindow();page.on('pageerror',e=>report.errors.push(e.message))
+  await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',e=>report.errors.push(e.message))
   await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   const nav=name=>page.locator('.navigation').getByRole('button',{name,exact:true}).click()
   const scope=()=>page.locator('.processing-page:visible'),dock=()=>page.locator('.workspace-header .processing-dock')

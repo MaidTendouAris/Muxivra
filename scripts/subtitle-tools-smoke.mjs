@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import { createProject } from './gui-projects.mjs'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
@@ -14,7 +15,7 @@ let desktop,page
 const report={errors:[],checks:[]}
 const until=async check=>{const end=Date.now()+30000;while(Date.now()<end){if(await check())return;await page.waitForTimeout(60)}throw new Error('Subtitle tools state timed out')}
 const select=async(label,value)=>{await page.getByLabel(label,{exact:true}).click();await page.getByRole('option',{name:value,exact:true}).click()}
-const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1440,1000));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})}
+const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1440,1000));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})}
 const session=()=>page.evaluate(()=>window.muxivra.getSession())
 const waitText=expected=>until(async()=>JSON.stringify((await session()).cues.slice(0,2).map(c=>c.text))===JSON.stringify(expected))
 const closeTools=async()=>{await page.getByRole('dialog').getByLabel('关闭',{exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'})}

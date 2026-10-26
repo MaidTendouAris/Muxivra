@@ -31,6 +31,9 @@ jobs:
       RELEASE_TAG: ${{ inputs.release-tag }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       PYTHONUTF8: '1'
+      # Hosted Windows has no Chromium GPU texture-import device. UI tests use
+      # an explicit receiver fixture; actual GPU/pixel tests remain separate.
+      MUXIVRA_HEADLESS_TEXTURE_TEST: '1'
     defaults:
       run:
         shell: pwsh
@@ -114,6 +117,7 @@ jobs:
         run: npm run smoke:subtitle-tools
 
       - name: Verify composited mpv textures and resource lifecycle
+        if: env.MUXIVRA_HEADLESS_TEXTURE_TEST != '1'
         env:
           MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
         run: |
@@ -178,7 +182,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/qa/*.json
+          path: |
+            artifacts/qa/*.json
+            artifacts/qa/*failed.png
           if-no-files-found: ignore
           retention-days: 14
 
@@ -188,4 +194,5 @@ jobs:
         run: |
           "## Muxivra $env:VERSION · Windows x64" >> $env:GITHUB_STEP_SUMMARY
           "Validated portable ZIP, NSIS EXE, updater metadata, FFmpeg integration, installer data preservation." >> $env:GITHUB_STEP_SUMMARY
+          "Hosted UI tests use an explicit receiver fixture; Chromium GPU texture import and video pixels are not verified on this runner. Run smoke:player and smoke:player-composition on a real GPU without MUXIVRA_HEADLESS_TEXTURE_TEST." >> $env:GITHUB_STEP_SUMMARY
           Get-Content artifacts/qa/release-contents.json >> $env:GITHUB_STEP_SUMMARY

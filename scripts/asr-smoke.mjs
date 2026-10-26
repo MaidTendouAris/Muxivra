@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import { createProject } from './gui-projects.mjs'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
@@ -18,7 +19,7 @@ await writeFile(source.replace('.wav','.ass'),'[Script Info]\nScriptType: v4.00+
 const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
 let page
 try{
-  page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message))
+  await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message))
   const until=async(check,timeout=30000)=>{const deadline=Date.now()+timeout;while(Date.now()<deadline){if(await check())return;await page.waitForTimeout(40)}throw new Error('ASR smoke condition timed out')}
   report.appVersion=await desktop.evaluate(({app})=>app.getVersion())
   const nav=name=>page.locator('.navigation').getByRole('button',{name,exact:false}).click()

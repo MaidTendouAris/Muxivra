@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import {createProject} from './gui-projects.mjs'
 import {_electron as electron} from 'playwright'
 import electronPath from 'electron'
@@ -15,7 +16,7 @@ let desktop,page,source
 const report={executable:process.env.MUXIVRA_EXECUTABLE||'development',checks:[],errors:[]}
 const until=async(check,label='Source workspace state')=>{const end=Date.now()+30000;while(Date.now()<end){if(await check())return;await new Promise(resolve=>setTimeout(resolve,70))}throw new Error(label+' timed out')}
 const watch=window=>{window.on('pageerror',error=>report.errors.push(error.message));window.on('console',message=>{if(message.type()==='error')report.errors.push(message.text())});window.on('dialog',dialog=>{void dialog.dismiss().catch(error=>{if(dialog.type()!=='beforeunload'||!/No dialog is showing|Target page, context or browser has been closed|session closed/i.test(error.message))report.errors.push(error.message)})})}
-const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});page=await desktop.firstWindow();watch(page);await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})}
+const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();watch(page);await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})}
 const openSource=async path=>{const opened=desktop.waitForEvent('window');await page.evaluate(path=>window.muxivra.openSourceEditor({path}),path);source=await opened;watch(source);await source.getByTestId('source-save-status').getByText('已保存',{exact:true}).waitFor({timeout:30000});await source.getByRole('checkbox',{name:'自动保存',exact:true}).waitFor()}
 const autoSave=()=>source.getByRole('checkbox',{name:'自动保存',exact:true})
 const explorer=()=>source.getByTestId('source-explorer')

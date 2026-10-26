@@ -1,3 +1,4 @@
+import { installHeadlessTextureFixture } from './headless-texture-fixture.mjs'
 import assert from 'node:assert/strict'
 import { _electron as electron } from 'playwright'
 import electronPath from 'electron'
@@ -16,7 +17,7 @@ await promisify(execFile)('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=siz
 let desktop,page,sourceWindow,success=false
 const report={executable:process.env.MUXIVRA_EXECUTABLE||'development',fixture:root,checks:[],errors:[],layouts:[]}
 const until=async(check,label='Waveform state',timeout=30000)=>{const end=Date.now()+timeout;while(Date.now()<end){if(await check())return;await new Promise(done=>setTimeout(done,40))}throw new Error(label+' timed out')}
-const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})}
+const launch=async()=>{desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_TEST_SYSTEM_LANGUAGES:'zh-CN',MUXIVRA_DATA_PATH:join(root,'profile'),MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});await installHeadlessTextureFixture(desktop);page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})}
 try{
   await launch();report.version=await desktop.evaluate(({app})=>app.getVersion())
   await page.evaluate(()=>{window.waveformSmokePhases=[];window.muxivra.onUpdate(state=>{const phase=state.projects?.import?.phase;if(phase&&!window.waveformSmokePhases.includes(phase))window.waveformSmokePhases.push(phase)})})
