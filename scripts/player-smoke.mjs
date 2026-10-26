@@ -20,7 +20,7 @@ const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTAB
 const errors=[]
 try {
   const page=await desktop.firstWindow();page.on('pageerror',error=>errors.push(error.message))
-  await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(true);w.show();w.focus()});await page.bringToFront()
   await desktop.evaluate(({dialog},values)=>{
     dialog.showOpenDialog=async(_parent,options)=>({canceled:false,filePaths:options.title==='载入音轨'?[values.audio]:options.title==='载入字幕'?[values.srt]:[values.video]})
@@ -44,113 +44,29 @@ try {
   await page.getByLabel('音量百分比',{exact:true}).press('ArrowUp');await wait(s=>s.volume===55);await page.getByLabel('音量百分比',{exact:true}).press('ArrowDown');await wait(s=>s.volume===50)
   await page.waitForFunction(()=>{const box=document.querySelector('[data-player-owner="single"] .mpv-viewport').getBoundingClientRect();return Math.abs(box.width/box.height-16/9)<.01})
   assert.equal((await page.evaluate(()=>window.muxivra.snapshot())).engine,undefined)
-  const user=koffi.load('user32.dll'),find=user.func('uintptr_t __stdcall FindWindowExW(uintptr_t parent, uintptr_t after, str16 name, str16 title)'),parentOf=user.func('uintptr_t __stdcall GetParent(uintptr_t window)'),isVisible=user.func('bool __stdcall IsWindowVisible(uintptr_t window)'),post=user.func('bool __stdcall PostMessageW(uintptr_t window, uint32_t message, uintptr_t wParam, intptr_t lParam)')
-  user.func('intptr_t __stdcall SetThreadDpiAwarenessContext(intptr_t context)')(-4)
+  const canvas=page.locator('canvas[data-mpv-surface="single"]')
+  await page.waitForFunction(()=>Number(document.querySelector('canvas[data-mpv-surface="single"]')?.dataset.presentedFrames)>0)
+  const image=await canvas.evaluate(c=>{const data=c.getContext('2d').getImageData(0,0,c.width,c.height).data;const colors=new Set();for(let i=0;i<data.length;i+=400)colors.add([data[i],data[i+1],data[i+2]].join(','));return {width:c.width,height:c.height,colors:colors.size}})
+  assert.ok(image.width>100&&image.height>100&&image.colors>8,'mpv must render real video pixels into Chromium canvas')
+  const user=koffi.load('user32.dll'),find=user.func('uintptr_t __stdcall FindWindowExW(uintptr_t parent, uintptr_t after, str16 name, str16 title)')
   const main=await desktop.evaluate(({BrowserWindow})=>Number(BrowserWindow.getAllWindows()[0].getNativeWindowHandle().readBigUInt64LE()))
-  const native=Number(find(main,0,'STATIC',null));assert.ok(native);assert.equal(Number(parentOf(native)),main)
-  await page.waitForTimeout(200);assert.equal(isVisible(native),true)
-  const mpvChild=Number(find(native,0,null,null));assert.ok(mpvChild)
-  console.log('Native mpv child window:',mpvChild)
-  assert.equal(isVisible(mpvChild),true)
-  await page.getByRole('combobox',{name:'视频编码',exact:true}).click();await page.getByRole('listbox').waitFor();await page.waitForTimeout(100);assert.equal(isVisible(native),true);await page.keyboard.press('Escape')
-  post(mpvChild,0x100,0x20,0);post(mpvChild,0x101,0x20,0);await wait(s=>!s.paused&&s.positionMs>200)
-  post(mpvChild,0x100,0x20,0);post(mpvChild,0x101,0x20,0);await wait(s=>s.paused)
-  const rectType=koffi.struct('MuxivraSmokeRect',{left:'int',top:'int',right:'int',bottom:'int'}),getRect=user.func('GetClientRect','bool',['uintptr_t',koffi.out(koffi.pointer(rectType))]),getDC=user.func('uintptr_t __stdcall GetDC(uintptr_t window)'),releaseDC=user.func('int __stdcall ReleaseDC(uintptr_t window, uintptr_t dc)'),gdi=koffi.load('gdi32.dll'),getPixel=gdi.func('uint32_t __stdcall GetPixel(uintptr_t dc, int x, int y)')
-  // Constrain the window so the popup opens over video. On taller desktops
-  // Radix can legitimately place the entire speed menu below the player.
-  const previousNativeBounds=await desktop.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0],bounds=w.getBounds();w.setBounds({width:1380,height:720});w.setAlwaysOnTop(true);w.show();return bounds});await page.waitForTimeout(500)
-  await page.getByRole('combobox',{name:'播放速度',exact:true}).click();await page.getByRole('listbox').waitFor();await page.waitForTimeout(150)
-  const pointType=koffi.struct('MuxivraSmokePoint',{x:'int',y:'int'}),toScreen=user.func('ClientToScreen','bool',['uintptr_t',koffi.inout(koffi.pointer(pointType))]),hitWindow=user.func('WindowFromPoint','uintptr_t',[pointType]),ancestor=user.func('uintptr_t __stdcall GetAncestor(uintptr_t window, uint32_t flags)')
-  const nativeRect={},origin={x:0,y:0};getRect(mpvChild,nativeRect);toScreen(mpvChild,origin);const dc=getDC(0),colors=new Set()
-  const pixelGeometry=async()=>{const rect={},screen={x:0,y:0};getRect(mpvChild,rect);toScreen(mpvChild,screen);const player=await state();return {rect,screen,positionMs:player.positionMs,paused:player.paused,dom:await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),scroll:await page.evaluate(()=>({x:scrollX,y:scrollY,innerWidth,innerHeight}))}}
-  try{
-    const menu=await page.getByRole('listbox').boundingBox(),scale=await page.evaluate(()=>devicePixelRatio),clientPoint={x:0,y:0};toScreen(main,clientPoint)
-    const box={left:Math.round(clientPoint.x+menu.x*scale),top:Math.round(clientPoint.y+menu.y*scale),right:Math.round(clientPoint.x+(menu.x+menu.width)*scale),bottom:Math.round(clientPoint.y+(menu.y+menu.height)*scale)}
-    const ring=[]
-    for(let y=box.top+5;y<box.bottom-5;y+=9)for(const x of [box.left-1,box.right])if(x>origin.x+1&&x<origin.x+nativeRect.right-1&&y>origin.y+1&&y<origin.y+nativeRect.bottom-1)ring.push({x,y})
-    for(let x=box.left+5;x<box.right-5;x+=9)for(const y of [box.top-1,box.bottom])if(x>origin.x+1&&x<origin.x+nativeRect.right-1&&y>origin.y+1&&y<origin.y+nativeRect.bottom-1)ring.push({x,y})
-    // Rounded popup corners are transparent and must retain the video beneath.
-    for(const x of [box.left+1,box.right-2])for(const y of [box.top+1,box.bottom-2])if(x>origin.x+1&&x<origin.x+nativeRect.right-1&&y>origin.y+1&&y<origin.y+nativeRect.bottom-1)ring.push({x,y})
-    assert.ok(ring.length>10,'Speed menu must overlap native video')
-    for(const theme of ['dark','light']) {
-      await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);await page.waitForTimeout(150)
-      const beforeGeometry=await pixelGeometry()
-      const withMenu=ring.map(p=>getPixel(dc,p.x,p.y))
-      await page.keyboard.press('Escape');await page.waitForTimeout(200)
-      const afterGeometry=await pixelGeometry()
-      assert.deepEqual(afterGeometry.rect,beforeGeometry.rect,'Popup changed native video dimensions; pixel baselines would not be comparable')
-      assert.equal(beforeGeometry.paused,true);assert.equal(afterGeometry.paused,true);assert.equal(afterGeometry.positionMs,beforeGeometry.positionMs,'Popup changed the paused video frame')
-      // Radix scroll locking can shift a fractional CSS margin by 0.2px. At
-      // 125% DPI this moves the native child by one screen pixel. Compare the
-      // same video-content coordinate instead of adjacent screen pixels.
-      const dx=afterGeometry.screen.x-beforeGeometry.screen.x,dy=afterGeometry.screen.y-beforeGeometry.screen.y
-      const baseline=ring.map(p=>getPixel(dc,p.x+dx,p.y+dy))
-      // D3D output dithering can vary a channel by 1 between paused redraws.
-      const bad=ring.map((point,index)=>({point,withMenu:withMenu[index],baseline:baseline[index],delta:[0,8,16].map(shift=>Math.abs(((withMenu[index]>>shift)&255)-((baseline[index]>>shift)&255)))})).filter(sample=>sample.delta.some(delta=>delta>3))
-      if(bad.length)console.log('Popup perimeter pixel mismatches:',JSON.stringify({theme,count:bad.length,samples:bad.slice(0,30),menu,scale,beforeGeometry,afterGeometry}))
-      assert.equal(bad.length,0,'Menu clipping exposed a dark perimeter outside the popup: '+theme)
-      await page.getByRole('combobox',{name:'播放速度',exact:true}).click();await page.getByRole('listbox').waitFor();await page.waitForTimeout(150)
-    }
-    for(let x=2;x<8;x++)for(let y=2;y<8;y++){const sample={x:origin.x+Math.round(nativeRect.right*x/10),y:origin.y+Math.round(nativeRect.bottom*y/10)};assert.equal(Number(ancestor(hitWindow(sample),2)),main,'Sampled area must belong to the test application');colors.add(getPixel(dc,sample.x,sample.y))}
-    const client={},clientOrigin={x:0,y:0};getRect(main,client);toScreen(main,clientOrigin)
-    const width=client.right,height=client.bottom
-    for(const x of [2,width/2,width-2])for(const y of [2,height/2,height-2])assert.equal(Number(ancestor(hitWindow({x:Math.round(clientOrigin.x+x),y:Math.round(clientOrigin.y+y)}),2)),main)
-    const createDC=gdi.func('uintptr_t __stdcall CreateCompatibleDC(uintptr_t dc)'),createBitmap=gdi.func('uintptr_t __stdcall CreateCompatibleBitmap(uintptr_t dc, int width, int height)'),select=gdi.func('uintptr_t __stdcall SelectObject(uintptr_t dc, uintptr_t object)'),blit=gdi.func('bool __stdcall BitBlt(uintptr_t dest, int x, int y, int width, int height, uintptr_t source, int sourceX, int sourceY, uint32_t flags)'),bits=gdi.func('int __stdcall GetDIBits(uintptr_t dc, uintptr_t bitmap, uint32_t start, uint32_t lines, void *pixels, void *info, uint32_t usage)'),deleteObject=gdi.func('bool __stdcall DeleteObject(uintptr_t object)'),deleteDC=gdi.func('bool __stdcall DeleteDC(uintptr_t dc)')
-    const memory=createDC(dc),bitmap=createBitmap(dc,width,height),old=select(memory,bitmap),pixels=Buffer.alloc(width*height*4),info=Buffer.alloc(40)
-    info.writeUInt32LE(40,0);info.writeInt32LE(width,4);info.writeInt32LE(-height,8);info.writeUInt16LE(1,12);info.writeUInt16LE(32,14)
-    try{assert.ok(blit(memory,0,0,width,height,dc,clientOrigin.x,clientOrigin.y,0x00cc0020));select(memory,old);assert.equal(bits(memory,bitmap,0,height,pixels,info,0),height);for(let i=3;i<pixels.length;i+=4)pixels[i]=255
-      const png=await desktop.evaluate(({nativeImage},value)=>nativeImage.createFromBitmap(Buffer.from(value.bytes,'base64'),value.size).toPNG().toString('base64'),{bytes:pixels.toString('base64'),size:{width,height}});await writeFile('artifacts/qa/player-native.png',Buffer.from(png,'base64'))
-    }finally{select(memory,old);deleteObject(bitmap);deleteDC(memory)}
-  }finally{releaseDC(0,dc);await page.keyboard.press('Escape');await desktop.evaluate(({BrowserWindow},bounds)=>{const w=BrowserWindow.getAllWindows()[0];w.setAlwaysOnTop(false);w.setBounds(bounds)},previousNativeBounds);await page.waitForTimeout(150)}
-  console.log('Native video pixels verified');assert.ok(colors.size>6,'Native surface did not render video pixels')
-  // Moving the DOM host must keep video visible and update its native bounds
-  // and clipping throughout the scroll burst, without seeking or pausing.
-  const scrollState=await state(),getWindowRegion=user.func('int __stdcall GetWindowRgn(uintptr_t window, uintptr_t region)'),makeRegion=gdi.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)'),pointInRegion=gdi.func('bool __stdcall PtInRegion(uintptr_t region, int x, int y)'),disposeRegion=gdi.func('bool __stdcall DeleteObject(uintptr_t object)')
-  await desktop.evaluate(({ipcMain})=>{const original=ipcMain._invokeHandlers.get('muxivra:playerRect');ipcMain.removeHandler('muxivra:playerRect');globalThis.__lastNativeRects=[];ipcMain.handle('muxivra:playerRect',(event,owner,rect)=>{globalThis.__lastNativeRects.push({owner,rect});globalThis.__lastNativeRects=globalThis.__lastNativeRects.slice(-10);return original(event,owner,rect)})})
-  await page.evaluate(()=>{
-    const pad=document.createElement('div');pad.id='native-scroll-fixture';pad.style.height='1600px';document.querySelector('.workspace').append(pad)
-    globalThis.__nativeScrollFinished=false
-    let index=0;const values=[100,230,40,190,80,210,50,180,70,160,110,200]
-    const next=()=>{scrollTo(0,values[index++]);if(index<values.length)setTimeout(next,20);else globalThis.__nativeScrollFinished=true};next()
-  })
-  const scrollColors=new Set(),scrollDC=getDC(0)
-  try{
-    for(let sample=0;sample<10;sample++){
-      await page.waitForTimeout(15);assert.equal(isVisible(native),true,'Scrolling hid the native video')
-      const box={},screen={x:0,y:0};getRect(mpvChild,box);toScreen(mpvChild,screen)
-      for(const x of [.25,.5,.75])for(const y of [.6,.75,.9]){
-        const point={x:Math.round(screen.x+box.right*x),y:Math.round(screen.y+box.bottom*y)}
-        let hit=Number(hitWindow(point));for(let depth=0;hit&&hit!==native&&depth<8;depth++)hit=Number(parentOf(hit))
-        if(hit===native){const color=getPixel(scrollDC,point.x,point.y);if(color!==0xffffffff)scrollColors.add(color)}
-      }
-    }
-  }finally{releaseDC(0,scrollDC)}
-  assert.ok(scrollColors.size>6,'Scrolling replaced video with a black surface')
-  await page.waitForFunction(()=>globalThis.__nativeScrollFinished)
-  for(let attempt=0;attempt<50&&!isVisible(native);attempt++)await page.waitForTimeout(20)
-  assert.equal(isVisible(native),true,'Native video disappeared after scrolling stopped')
-  const aligned=await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),nativeOrigin={x:0,y:0},mainOrigin={x:0,y:0},dpi=await page.evaluate(()=>devicePixelRatio);toScreen(native,nativeOrigin);toScreen(main,mainOrigin)
-  assert.ok(Math.abs(nativeOrigin.x-mainOrigin.x-Math.round(aligned.x*dpi))<=1)
-  assert.ok(Math.abs(nativeOrigin.y-mainOrigin.y-Math.round(aligned.y*dpi))<=1)
-  // HRGN may be a sign-extended bigint; converting it to Number truncates the
-  // handle and makes region reads fail intermittently on Windows x64.
-  const visibleRegion=makeRegion(0,0,0,0);assert.ok(visibleRegion)
-  try{
-    let regionResult=0;for(let attempt=0;attempt<100&&!regionResult;attempt++){regionResult=getWindowRegion(native,visibleRegion);if(!regionResult)await page.waitForTimeout(20)}
-    if(!regionResult)console.log('Missing window native region:',JSON.stringify({aligned,regionResult,visibleRegion:String(visibleRegion),nativeOrigin,mainOrigin,dpi,rects:await desktop.evaluate(()=>globalThis.__lastNativeRects),metrics:await page.evaluate(()=>({scrollY,innerHeight,height:document.scrollingElement.scrollHeight,overflow:getComputedStyle(document.body).overflowY}))}));assert.ok(regionResult>0)
-    assert.ok(aligned.y<0,'Scroll regression must place part of the preview above the window')
-    assert.equal(pointInRegion(visibleRegion,Math.round(aligned.width*dpi/2),1),false,'Native video paints above the visible DOM viewport')
-    assert.equal(pointInRegion(visibleRegion,Math.round(aligned.width*dpi/2),Math.round((-aligned.y+8)*dpi)),true)
-  }finally{disposeRegion(visibleRegion)}
+  assert.equal(Number(find(main,0,'STATIC',null)),0,'Playback must not create a native child HWND')
+  const bounds=await canvas.boundingBox(),point={x:Math.round(bounds.x+bounds.width*.12),y:Math.round(bounds.y+bounds.height*.45)}
+  const pixel=()=>desktop.evaluate(async({BrowserWindow},point)=>{const image=await BrowserWindow.getAllWindows()[0].webContents.capturePage({...point,width:1,height:1});return [...image.toBitmap({scaleFactor:1}).subarray(0,3)]},point)
+  const beforeShade=await pixel()
+  await page.evaluate(()=>{const shade=document.createElement('div');shade.id='texture-shade';Object.assign(shade.style,{position:'fixed',inset:'0',zIndex:'99999',background:'rgba(0,0,0,.5)',pointerEvents:'none'});document.body.append(shade)})
+  await page.waitForTimeout(150);const afterShade=await pixel()
+  assert.ok(Math.max(...beforeShade)>70)
+  for(let i=0;i<3;i++)assert.ok(Math.abs(afterShade[i]-beforeShade[i]*.5)<12,'Translucent DOM overlay must composite over video')
+  await page.screenshot({path:'artifacts/qa/player-composited-overlay.png'})
+  await page.evaluate(()=>document.getElementById('texture-shade').remove())
+  const scrollState=await state()
+  await page.locator('[data-player-owner="single"]').evaluate(player=>{const wrapper=document.createElement('div');wrapper.id='texture-scroll';Object.assign(wrapper.style,{height:'190px',overflow:'auto',borderRadius:'16px'});player.before(wrapper);wrapper.append(player);const pad=document.createElement('div');pad.style.height='800px';wrapper.append(pad)})
+  for(const top of [20,100,45,160,80,200,0]){await page.locator('#texture-scroll').evaluate((element,top)=>{element.scrollTop=top},top);await page.waitForTimeout(16)}
   assert.equal((await state()).positionMs,scrollState.positionMs);assert.equal((await state()).paused,scrollState.paused)
-  await page.evaluate(()=>{scrollTo(0,0);document.getElementById('native-scroll-fixture').remove();delete globalThis.__nativeScrollFinished});await page.waitForTimeout(200)
-  const nestedStyle=await page.locator('[data-player-owner="single"]').getAttribute('style')
-  await page.locator('[data-player-owner="single"]').evaluate(element=>{const viewport=element.querySelector('.mpv-viewport');element.style.height=`${viewport.clientHeight/2}px`;element.style.overflow='auto';element.scrollTop=80})
-  await page.waitForTimeout(220);assert.equal(isVisible(native),true)
-  const nested=await page.locator('[data-player-owner="single"] .mpv-viewport').boundingBox(),container=await page.locator('[data-player-owner="single"]').boundingBox(),nestedRegion=makeRegion(0,0,0,0)
-  try{let regionResult=0;for(let attempt=0;attempt<100&&!regionResult;attempt++){regionResult=getWindowRegion(native,nestedRegion);if(!regionResult)await page.waitForTimeout(20)}if(!regionResult)console.log('Missing nested native region:',JSON.stringify({nested,container,regionResult,rects:await desktop.evaluate(()=>globalThis.__lastNativeRects),metrics:await page.locator('[data-player-owner="single"]').evaluate(element=>({height:element.clientHeight,total:element.scrollHeight,top:element.scrollTop,style:element.getAttribute('style'),overflow:getComputedStyle(element).overflowY}))}));assert.ok(regionResult>0);assert.ok(container.y>nested.y);assert.equal(pointInRegion(nestedRegion,Math.round(nested.width*dpi/2),1),false);assert.equal(pointInRegion(nestedRegion,Math.round(nested.width*dpi/2),Math.round((container.y-nested.y+8)*dpi)),true)}finally{disposeRegion(nestedRegion)}
-  await page.locator('[data-player-owner="single"]').evaluate((element,style)=>{element.scrollTop=0;if(style===null)element.removeAttribute('style');else element.setAttribute('style',style)},nestedStyle);await page.waitForTimeout(220)
-  console.log('Video decoded by mpv')
+  await page.screenshot({path:'artifacts/qa/player-composited-scroll.png'})
+  await page.evaluate(()=>{const wrapper=document.getElementById('texture-scroll'),player=wrapper.querySelector('[data-player-owner]');wrapper.before(player);wrapper.remove()})
+  await page.waitForTimeout(150)
   assert.equal(await page.locator('video,audio').count(),0)
   await page.getByRole('button',{name:'播放',exact:true}).click();await wait(s=>!s.paused&&s.positionMs>300)
   await page.getByRole('button',{name:'暂停',exact:true}).click();await wait(s=>s.paused)
@@ -164,7 +80,7 @@ try {
   await page.getByRole('button',{name:'上一帧',exact:true}).click();await wait(s=>s.positionMs<=before+10)
   await page.getByRole('button',{name:'设置 A',exact:true}).click();await wait(s=>s.loopA!==undefined)
   await page.getByLabel('跳转时间',{exact:true}).fill('00:00:03,000');await page.getByRole('button',{name:'跳转',exact:true}).click();await wait(s=>s.positionMs>=2990)
-  await page.getByRole('button',{name:'设置 B',exact:true}).click();await wait(s=>s.loopB>=2990)
+  await page.getByRole('button',{name:'设置 B',exact:true}).click();await wait(s=>s.loopB>=2990);await page.getByRole('button',{name:'关闭播放设置',exact:true}).click()
   await page.getByRole('button',{name:'播放',exact:true}).click();await wait(s=>!s.paused)
   const positions=[];for(let i=0;i<12;i++){positions.push((await state()).positionMs);await page.waitForTimeout(100)}
   assert.ok(positions.some((value,index)=>index>0&&value<positions[index-1]-100),'A–B playback did not loop');assert.ok(Math.max(...positions)<3150)
@@ -192,7 +108,7 @@ try {
   const externalSubtitle=(await state()).tracks.find(t=>t.type==='sub'&&t.external)
   await page.getByRole('combobox',{name:'播放字幕',exact:true}).click();await page.getByRole('option').filter({hasText:'external.srt'}).waitFor();await page.keyboard.press('Escape')
   await choose('播放字幕',String(externalSubtitle.id));await wait(s=>s.subtitleTrack===externalSubtitle.id)
-  await page.getByRole('button',{name:'载入音轨',exact:true}).click();await wait(s=>s.tracks.some(t=>t.type==='audio'&&t.external))
+  await page.getByRole('button',{name:'载入音轨',exact:true}).click();await wait(s=>s.tracks.some(t=>t.type==='audio'&&t.external));await page.getByRole('button',{name:'关闭播放设置',exact:true}).click()
   await page.getByRole('button',{name:'截图',exact:true}).click();await page.waitForTimeout(500)
   const png=await readFile(shot);assert.equal(png.readUInt32BE(16),480);assert.equal(png.readUInt32BE(20),270)
   await assert.rejects(page.evaluate(()=>window.muxivra.playerScreenshot('single')),/EEXIST|exists/);assert.deepEqual(await readFile(shot),png)
@@ -202,15 +118,15 @@ try {
   await page.screenshot({path:'artifacts/qa/player-controls.png',fullPage:true})
   await desktop.evaluate(({dialog},audio)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[audio]})},audio)
   await page.getByRole('button',{name:'播放设置与列表',exact:true}).click()
-  await page.getByRole('button',{name:'添加到列表',exact:true}).click();await wait(s=>s.playlist.length===2)
+  await page.getByRole('button',{name:'添加到列表',exact:true}).click();await wait(s=>s.playlist.length===2);await page.getByRole('button',{name:'关闭播放设置',exact:true}).click()
   await page.getByRole('button',{name:'下一项',exact:true}).click();await wait(s=>s.playlistIndex===1&&!s.loading&&s.tracks.some(t=>t.type==='audio')&&!s.tracks.some(t=>t.type==='video'))
   await page.getByRole('button',{name:'播放',exact:true}).click();await wait(s=>!s.paused&&s.positionMs>250)
   assert.ok(await page.locator('.audio-viewport').evaluate(e=>e.getBoundingClientRect().height)<100)
-  assert.equal(isVisible(native),false)
+  assert.equal(await canvas.isVisible(),false)
   await page.getByRole('button',{name:'暂停',exact:true}).click();await wait(s=>s.paused)
   await page.screenshot({path:'artifacts/qa/player-audio.png',fullPage:true})
   await page.getByRole('button',{name:'播放设置与列表',exact:true}).click()
-  await page.getByRole('button',{name:'移除播放项 1',exact:true}).click();await wait(s=>s.playlist.length===1)
+  await page.getByRole('button',{name:'移除播放项 1',exact:true}).click();await wait(s=>s.playlist.length===1);await page.getByRole('button',{name:'关闭播放设置',exact:true}).click()
   await desktop.evaluate(({dialog},video)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[video]})},video)
   await page.getByRole('button',{name:'更换文件',exact:true}).click();await wait(s=>s.path===video&&s.videoWidth===480&&!s.loading&&s.playlist.length===1)
   await page.getByRole('button',{name:'停止',exact:true}).click();await wait(s=>s.paused&&s.positionMs===0)
@@ -223,7 +139,7 @@ try {
   await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1040,height:720}));await page.waitForTimeout(300)
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
   assert.deepEqual(errors,[])
-  const report={appVersion:await desktop.evaluate(({app})=>app.getVersion()),executable:process.env.MUXIVRA_EXECUTABLE||'development',version:(await state()).version,features:['video','audio','pause','seek','speed','volume','mute','frames','ab-loop','repeat','audio-tracks','external-audio','external-subtitles','delays','screenshot','fullscreen','playlist'],noProcessingEnginePlayback:true,nativeChildWindow:true,nativeKeyboard:true,nativeVideoPixels:true,menuPerimeterPixelsMatchVideo:true,rapidScrollKeepsVideoVisible:true,rapidScrollVideoPixels:true,scrollSettledNativeAlignment:true,windowAndAncestorClipping:true,scrollPreservesPositionAndPause:true,delayedStateReselectMouseAndKeyboard:true,defaultVolume:50,volumeKeyboardStep:5,volumeDragIgnoresStaleState:true,portraitAndRotationAspect:true,viewportMaxHeight:540,parameterMenuKeepsVideoVisible:true,chromiumMediaElements:0,errors}
+  const report={appVersion:await desktop.evaluate(({app})=>app.getVersion()),executable:process.env.MUXIVRA_EXECUTABLE||'development',version:(await state()).version,features:['video','audio','pause','seek','speed','volume','mute','frames','ab-loop','repeat','audio-tracks','external-audio','external-subtitles','delays','screenshot','fullscreen','playlist'],noProcessingEnginePlayback:true,nativeChildWindow:false,gpuSharedTexture:true,realCanvasVideoPixels:true,translucentOverlayComposited:true,scrollClipsWithDom:true,scrollPreservesPositionAndPause:true,delayedStateReselectMouseAndKeyboard:true,defaultVolume:50,volumeKeyboardStep:5,volumeDragIgnoresStaleState:true,portraitAndRotationAspect:true,viewportMaxHeight:540,parameterMenuKeepsVideoVisible:true,chromiumMediaElements:0,errors}
   await writeFile('artifacts/qa/player-smoke.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2))
 } finally {
   await desktop.close();const rel=relative(resolve('.test-data'),root);if(rel&&!rel.startsWith(`..${sep}`)&&!isAbsolute(rel))await rm(root,{recursive:true,force:true})

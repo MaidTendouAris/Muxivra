@@ -1,51 +1,70 @@
-import koffi from 'koffi'
-import type { BrowserWindow } from 'electron'
-import type { PlayerRect } from '../../shared/player'
+import { app,sharedTexture,type BrowserWindow } from 'electron'
+import { EventEmitter } from 'node:events'
+import { Worker } from 'node:worker_threads'
+import { join } from 'node:path'
+import { playerTextureSize,type PlayerTextureFrame } from '../../shared/player-texture'
+import type { PlayerOwner,PlayerRect } from '../../shared/player'
 
-const user=koffi.load('user32.dll')
-const create=user.func('__stdcall','CreateWindowExW','uintptr_t',['uint32_t','str16','str16','uint32_t','int','int','int','int','uintptr_t','uintptr_t','uintptr_t','void *'])
-const position=user.func('bool __stdcall SetWindowPos(uintptr_t window, uintptr_t after, int x, int y, int width, int height, uint32_t flags)')
-const show=user.func('bool __stdcall ShowWindow(uintptr_t window, int command)')
-const destroy=user.func('bool __stdcall DestroyWindow(uintptr_t window)')
-const setRegion=user.func('int __stdcall SetWindowRgn(uintptr_t window, uintptr_t region, bool redraw)')
-const gdi=koffi.load('gdi32.dll')
-const createRegion=gdi.func('uintptr_t __stdcall CreateRectRgn(int left, int top, int right, int bottom)')
-const createRoundRegion=gdi.func('uintptr_t __stdcall CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight)')
-const combineRegion=gdi.func('int __stdcall CombineRgn(uintptr_t destination, uintptr_t first, uintptr_t second, int mode)')
-const deleteObject=gdi.func('bool __stdcall DeleteObject(uintptr_t object)')
-export class NativePlayerSurface {
-  readonly handle:number
-  private regionKey=''
-  constructor(window:BrowserWindow){
-    const parent=Number(window.getNativeWindowHandle().readBigUInt64LE())
-    this.handle=Number(create(0,'STATIC','',0x46000000,0,0,1,1,parent,0,0,null))
-    if(!this.handle)throw new Error('无法创建 mpv 播放区域')
+export class CompositedPlayerSurface extends EventEmitter {
+  private worker?:Worker
+  private rect?:PlayerRect
+  private closing=false
+  private stopped?:Promise<void>
+  private resolveStopped?:()=>void
+  private sentSize=''
+  private shown=true
+  readonly diagnostics={backend:'libmpv-d3d11-texture',frames:0,inFlight:0,maxInFlight:0,maxTextures:0}
+  constructor(private window:BrowserWindow,private owner:PlayerOwner){super()}
+  async start(library:string,options:Record<string,string>):Promise<void> {
+    const info=await app.getGPUInfo('complete') as {gpuDevice?:{active:boolean;vendorId:number;deviceId:number}[]},adapter=info.gpuDevice?.find(device=>device.active)
+    if(this.closing)throw new Error('播放会话已关闭')
+    const worker=this.worker=new Worker(join(__dirname,'player-render-worker.js'),{workerData:{library,owner:this.owner,options,adapter:adapter?{vendorId:adapter.vendorId,deviceId:adapter.deviceId}:undefined}})
+    this.stopped=new Promise(resolve=>{this.resolveStopped=resolve})
+    await new Promise<void>((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error('mpv GPU 渲染初始化超时')),15000)
+      let ready=false
+      worker.on('message',message=>{
+        if(message.type==='ready'){ready=true;clearTimeout(timeout);this.sync();resolve()}
+        if(message.type==='frame')void this.present(message)
+        if(message.type==='stopped')this.resolveStopped?.()
+        if(message.type==='error'){const error=new Error(message.message);if(!ready){clearTimeout(timeout);reject(error)}else if(!this.closing)this.emit('error',error)}
+      })
+      worker.on('error',error=>{clearTimeout(timeout);if(!ready)reject(error);else if(!this.closing)this.emit('error',error)})
+      worker.on('exit',code=>{clearTimeout(timeout);this.resolveStopped?.();if(!ready)reject(new Error(`mpv 渲染线程已退出 (${code})`));else if(!this.closing&&code!==0)this.emit('error',new Error(`mpv 渲染线程已退出 (${code})`))})
+    }).catch(async error=>{await this.destroy();throw error})
   }
-  update(rect:PlayerRect):void {
-    if(!rect.visible||rect.width<2||rect.height<2){this.hide();return}
-    const {scale}=rect
-    // Move/resize while preserving visibility; a suppressed surface is shown
-    // only after its final clipping region has been installed.
-    if(!position(this.handle,0,Math.round(rect.x*scale),Math.round(rect.y*scale),Math.round(rect.width*scale),Math.round(rect.height*scale),0x10))throw new Error('无法调整 mpv 播放区域')
-    const reveal=()=>{show(this.handle,8)}
-    const width=Math.round(rect.width*scale),height=Math.round(rect.height*scale)
-    const originX=Math.round(rect.x*scale),originY=Math.round(rect.y*scale)
-    const cuts=(rect.occlusions??[]).map(cut=>({left:Math.round((rect.x+cut.x)*scale)-originX,top:Math.round((rect.y+cut.y)*scale)-originY,right:Math.round((rect.x+cut.x+cut.width)*scale)-originX,bottom:Math.round((rect.y+cut.y+cut.height)*scale)-originY,radius:Math.round((cut.radius??0)*scale)})).filter(cut=>cut.right>0&&cut.left<width&&cut.bottom>0&&cut.top<height&&cut.right>cut.left&&cut.bottom>cut.top)
-    const key=JSON.stringify([width,height,cuts]);if(key===this.regionKey){reveal();return}
-    // Keep the native video visible; clip only actual DOM overlays. Windows
-    // owns the final region after SetWindowRgn succeeds.
-    // Install clipping before SWP_SHOWWINDOW. Showing a hidden child first can
-    // expose its full, stale region while Windows/mpv handles the resize.
-    if(!cuts.length){if(!setRegion(this.handle,0,true))throw new Error('无法恢复 mpv 播放区域');this.regionKey=key;reveal();return}
-    const region=createRegion(0,0,width,height);if(!region)throw new Error('无法创建播放窗口区域')
-    let transferred=false
+  private async present(frame:PlayerTextureFrame&{textures?:number}):Promise<void> {
+    this.diagnostics.maxTextures=Math.max(this.diagnostics.maxTextures,frame.textures??0)
+    const worker=this.worker
+    if(this.closing||this.window.isDestroyed()){worker?.postMessage({type:'release',id:frame.id});return}
+    let imported:Electron.SharedTextureImported|undefined
+    let released=false
+    const release=()=>{if(released)return;released=true;this.diagnostics.inFlight--;worker?.postMessage({type:'release',id:frame.id})}
     try {
-      for(const cut of cuts){const exclusion=cut.radius?createRoundRegion(cut.left,cut.top,cut.right+1,cut.bottom+1,cut.radius*2,cut.radius*2):createRegion(cut.left,cut.top,cut.right,cut.bottom);if(!exclusion)throw new Error('无法创建遮挡区域');try {if(!combineRegion(region,region,exclusion,4))throw new Error('无法裁剪播放窗口区域')}finally{deleteObject(exclusion)}}
-      if(!setRegion(this.handle,region,true))throw new Error('无法应用播放窗口区域')
-      transferred=true;this.regionKey=key
-      reveal()
-    }finally{if(!transferred)deleteObject(region)}
+      this.diagnostics.inFlight++;this.diagnostics.maxInFlight=Math.max(this.diagnostics.inFlight,this.diagnostics.maxInFlight)
+      imported=sharedTexture.importSharedTexture({textureInfo:{codedSize:{width:frame.width,height:frame.height},pixelFormat:'bgra',handle:{ntHandle:Buffer.from(frame.handle)}},allReferencesReleased:release})
+      await sharedTexture.sendSharedTexture({frame:this.window.webContents.mainFrame,importedSharedTexture:imported},{owner:this.owner,width:frame.width,height:frame.height})
+      this.diagnostics.frames++
+    }catch(error){
+      if(!imported)release()
+      if(!this.closing&&!this.window.isDestroyed())this.emit('error',new Error(`视频纹理传输失败：${(error as Error).message}`))
+    }finally{imported?.release()}
   }
-  hide():void {show(this.handle,0)}
-  destroy():void {destroy(this.handle)}
+  update(rect:PlayerRect):void {this.rect=rect;this.shown=true;this.sync()}
+  private sync():void {
+    if(!this.worker||!this.rect||this.closing)return
+    const rect=this.rect,size={...playerTextureSize(rect.width,rect.height,rect.scale),visible:this.shown&&rect.visible&&rect.active&&this.window.isVisible()}
+    const key=JSON.stringify(size);if(key===this.sentSize)return;this.sentSize=key;this.worker.postMessage({type:'size',size})
+  }
+  hide():void {this.shown=false;this.sync()}
+  async destroy():Promise<void> {
+    this.closing=true;if(!this.worker)return
+    // Drop any image retained by the 2D canvas before waiting for Chromium's
+    // release callbacks. Clearing works even if React detached the old canvas.
+    if(!this.window.isDestroyed())this.window.webContents.send('muxivra:player-surface-clear',this.owner)
+    this.worker.postMessage({type:'stop'})
+    let timeout:ReturnType<typeof setTimeout>|undefined
+    try{await Promise.race([this.stopped,new Promise(resolve=>{timeout=setTimeout(resolve,6000)})])}finally{if(timeout)clearTimeout(timeout)}
+    await this.worker.terminate();this.worker=undefined
+  }
 }

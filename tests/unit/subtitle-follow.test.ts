@@ -16,6 +16,6 @@ describe('Subtitle playback following',()=>{
   })
   it('bounds decoded waveform viewports and rejects invalid requests',()=>{
     expect(waveformRequestSchema.parse({})).toEqual({startMs:0,durationMs:15000,width:1000})
-    for(const request of [{durationMs:Infinity},{durationMs:120001},{durationMs:249},{startMs:-1},{width:4097},{width:0}])expect(waveformRequestSchema.safeParse(request).success).toBe(false)
+    for(const request of [{durationMs:Infinity},{durationMs:360001},{durationMs:249},{startMs:-1},{width:4097},{width:0}])expect(waveformRequestSchema.safeParse(request).success).toBe(false)
   })
 })

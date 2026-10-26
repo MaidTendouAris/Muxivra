@@ -1,18 +1,23 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { MuxivraApi } from '../shared/types'
+import './player-texture'
 
 const invoke = (method: string, ...args: unknown[]) => ipcRenderer.invoke(`muxivra:${method}`,...args)
 const api: MuxivraApi = {
+  mediaMetadata:path=>invoke('mediaMetadata',path),importLyrics:()=>invoke('importLyrics'),reviewCommand:(request,command)=>invoke('reviewCommand',request,command),submitCommand:reviewId=>invoke('submitCommand',reviewId),
+  openSourceEditor:request=>invoke('openSourceEditor',request),saveSourceSubtitle:(document,text,hash)=>invoke('saveSourceSubtitle',document,text,hash),
   selectProjectSubtitle:(projectId,id)=>invoke('selectProjectSubtitle',projectId,id),createProjectSubtitle:(projectId,name)=>invoke('createProjectSubtitle',projectId,name),renameProjectSubtitle:(projectId,id,name)=>invoke('renameProjectSubtitle',projectId,id,name),deleteProjectSubtitle:(projectId,id)=>invoke('deleteProjectSubtitle',projectId,id),
   onSubtitleEditorRequest:handler=>{const listener=async(_event:unknown,request:import('../shared/subtitle-mcp').SubtitleEditorRequest)=>{try{await invoke('subtitleEditorReply',{id:request.id,value:await handler(request)})}catch(error){await invoke('subtitleEditorReply',{id:request.id,error:(error as Error).message}).catch(()=>{})}};ipcRenderer.on('muxivra:subtitle-editor-request',listener);return()=>ipcRenderer.removeListener('muxivra:subtitle-editor-request',listener)},
-  importProject:request=>invoke('importProject',request),cancelProjectImport:()=>invoke('cancelProjectImport'),openProject:id=>invoke('openProject',id),closeProject:id=>invoke('closeProject',id),renameProject:(id,name)=>invoke('renameProject',id,name),archiveProject:id=>invoke('archiveProject',id),restoreProject:id=>invoke('restoreProject',id),duplicateProject:()=>invoke('duplicateProject'),exportProjectVideo:request=>invoke('exportProjectVideo',request),
+  importProject:request=>invoke('importProject',request),cancelProjectImport:()=>invoke('cancelProjectImport'),rebuildProjectAnalysis:id=>invoke('rebuildProjectAnalysis',id),openProject:id=>invoke('openProject',id),closeProject:id=>invoke('closeProject',id),renameProject:(id,name)=>invoke('renameProject',id,name),archiveProject:id=>invoke('archiveProject',id),restoreProject:id=>invoke('restoreProject',id),duplicateProject:()=>invoke('duplicateProject'),exportProjectVideo:request=>invoke('exportProjectVideo',request),
   asrSaveRecognition:(id,config)=>invoke('asrSaveRecognition',id,config),asrSaveEnvironment:request=>invoke('asrSaveEnvironment',request),asrRefreshEnvironment:id=>invoke('asrRefreshEnvironment',id),asrRemoveEnvironment:id=>invoke('asrRemoveEnvironment',id),asrSelectPath:kind=>invoke('asrSelectPath',kind),
   asrImport:request=>invoke('asrImport',request),asrRemoveModel:id=>invoke('asrRemoveModel',id),asrDownload:(kind,runtime)=>invoke('asrDownload',kind,runtime),asrCancelDownload:()=>invoke('asrCancelDownload'),asrSubmit:options=>invoke('asrSubmit',options),asrResult:id=>invoke('asrResult',id),asrRaw:(id,index)=>invoke('asrRaw',id,index),
   asrDiscoverPython:()=>invoke('asrDiscoverPython'),asrDownloadModel:id=>invoke('asrDownloadModel',id),asrBindAsset:(id,environmentId,runtimeId)=>invoke('asrBindAsset',id,environmentId,runtimeId),asrStoreModel:id=>invoke('asrStoreModel',id),asrImportComponent:role=>invoke('asrImportComponent',role),
   prepareSubtitleMedia:document=>invoke('prepareSubtitleMedia',document),
-  asrDetectNvidia:()=>invoke('asrDetectNvidia'),asrDeployNvidia:request=>invoke('asrDeployNvidia',request),asrCancelDeployment:()=>invoke('asrCancelDeployment'),asrDeploymentLog:()=>invoke('asrDeploymentLog'),asrCheckNetwork:()=>invoke('asrCheckNetwork'),
+  asrDetectNvidia:()=>invoke('asrDetectNvidia'),asrDeploymentPlan:request=>invoke('asrDeploymentPlan',request),asrDeployNvidia:request=>invoke('asrDeployNvidia',request),asrCancelDeployment:()=>invoke('asrCancelDeployment'),asrDeploymentLog:()=>invoke('asrDeploymentLog'),asrCheckNetwork:()=>invoke('asrCheckNetwork'),
+  asrDownloadResource:request=>invoke('asrDownloadResource',request),asrImportResource:request=>invoke('asrImportResource',request),asrConfigureModel:request=>invoke('asrConfigureModel',request),asrImportModelAsset:request=>invoke('asrImportModelAsset',request),
   appUpdateState:()=>invoke('appUpdateState'),openAppLink:kind=>invoke('openAppLink',kind),checkAppUpdate:()=>invoke('checkAppUpdate'),downloadAppUpdate:()=>invoke('downloadAppUpdate'),installAppUpdate:()=>invoke('installAppUpdate'),
   onAppUpdate:callback=>{const listener=(_event:unknown,state:Parameters<typeof callback>[0])=>callback(state);ipcRenderer.on('muxivra:app-update',listener);return()=>ipcRenderer.removeListener('muxivra:app-update',listener)},
+  downloadSources:()=>invoke('downloadSources'),saveDownloadSources:(configuration,revision)=>invoke('saveDownloadSources',configuration,revision),mcpActivity:page=>invoke('mcpActivity',page),
   mcpRequests:()=>invoke('mcpRequests'),mcpRequest:id=>invoke('mcpRequest',id),reviewMcpRequest:(id,approve,note)=>invoke('reviewMcpRequest',id,approve,note),
   exitState:()=>invoke('exitState'),requestExit:()=>invoke('requestExit'),respondToExit:confirm=>invoke('respondToExit',confirm),
   onExitState:callback=>{const listener=(_event:unknown,state:Parameters<typeof callback>[0])=>callback(state);ipcRenderer.on('muxivra:exit-state',listener);return()=>ipcRenderer.removeListener('muxivra:exit-state',listener)},
@@ -29,6 +34,9 @@ const api: MuxivraApi = {
   onPlayerState:callback=>{const listener=(_event:unknown,state:Parameters<typeof callback>[0])=>callback(state);ipcRenderer.on('muxivra:player-state',listener);return()=>ipcRenderer.removeListener('muxivra:player-state',listener)},
   onPlayerEvent:callback=>{const listener=(_event:unknown,event:Parameters<typeof callback>[0])=>callback(event);ipcRenderer.on('muxivra:player-event',listener);return()=>ipcRenderer.removeListener('muxivra:player-event',listener)},
   onPlayerError:callback=>{const listener=(_event:unknown,message:string)=>callback(message);ipcRenderer.on('muxivra:player-error',listener);return()=>ipcRenderer.removeListener('muxivra:player-error',listener)},
+  videoFrames:path=>invoke('videoFrames',path),videoFrameProgress:()=>invoke('videoFrameProgress'),cancelVideoFrames:()=>invoke('cancelVideoFrames'),
+  importSubtitleStyles:path=>invoke('importSubtitleStyles',path),
+  subtitleTools:()=>invoke('subtitleTools'),saveSubtitleTools:value=>invoke('saveSubtitleTools',value),
   waveform: (path,options) => invoke('waveform',path,options), reveal: path => invoke('reveal',path), readLog: id => invoke('readLog',id), copyText: text => invoke('copyText',text),readClipboardText:()=>invoke('readClipboardText'),
   mcpSetupInfo:()=>invoke('mcpSetupInfo'),mcpReadSkill:id=>invoke('mcpReadSkill',id),copyMcpConnectionPrompt:()=>invoke('copyMcpConnectionPrompt'),
   onUpdate: callback => { const listener = (_event: unknown,snapshot: Parameters<typeof callback>[0]) => callback(snapshot); ipcRenderer.on('muxivra:update',listener); return () => ipcRenderer.removeListener('muxivra:update',listener) }

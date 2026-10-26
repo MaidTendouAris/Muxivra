@@ -107,7 +107,8 @@ describe('ASR 完整工作流',()=>{
     const fetch=vi.spyOn(globalThis,'fetch').mockImplementation(async input=>{const file=assets.get(String(input));if(!file)throw new Error('Unexpected download URL');return new Response(Readable.toWeb(createReadStream(resolve('.runtime/asr-validation',file))) as ReadableStream)})
     try{
       await service.initialize();await service.asrModels.install('runtime','cpu');await service.asrModels.install('runtime','cuda');await service.asrModels.install('model')
-      const model=service.asrModels.state().models[0];expect(model.name).toBe('Whisper large-v3');expect(model.sha256).toBe(largeV3Catalog.sha256);expect(service.asrModels.state().runtimes).toHaveLength(2)
+      expect(service.asrModels.state().models).toEqual([])
+      const model=await service.asrModels.bindAsset('whisper-large-v3',undefined,'whisper-b5454-cuda');expect(model.name).toBe('Whisper large-v3');expect(service.asrModels.state().assets?.find(asset=>asset.id==='whisper-large-v3')?.bytes).toBe(largeV3Catalog.size);expect(service.asrModels.state().runtimes).toHaveLength(2)
       const files=await readdir('example_media'),source=await service.paths.grantFile(resolve('example_media',files.find(f=>f.startsWith('0001'))!))
       const project=await service.importProject({path:source,deleteOriginal:false}),managed=project.project.mediaPath
       const options:AsrOptions={inputPath:managed,modelId:model.id,audioStream:0,language:'zh',device:'gpu',threads:4,chunkingEnabled:false,chunkSeconds:120,beamSize:5,initialPrompt:'',startMs:30000,endMs:42000,estimateUntimed:false}

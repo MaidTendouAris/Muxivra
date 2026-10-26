@@ -5,7 +5,6 @@ import { join,resolve,relative,isAbsolute,sep } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import assert from 'node:assert/strict'
-import koffi from 'koffi'
 const exec=promisify(execFile)
 await mkdir('.test-data',{recursive:true});await mkdir('artifacts/qa',{recursive:true})
 const root=await mkdtemp(resolve('.test-data','ui-')),output=join(root,'output');await mkdir(output)
@@ -15,7 +14,7 @@ const desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTAB
 let closed=false
 try {
   const page=await desktop.firstWindow(),errors=[];page.on('pageerror',error=>errors.push(error.message))
-  await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   const version=await desktop.evaluate(({app})=>app.getVersion())
   await desktop.evaluate(({dialog},input)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[input]});dialog.showMessageBox=async()=>{throw new Error('退出使用了系统原生提示框')}},input)
   // Controlled latency tests exercise the real IPC handler after the delay.
@@ -33,9 +32,9 @@ try {
   await page.waitForFunction(async()=>{const s=await window.muxivra.playerState('single');return s.ready&&!s.loading&&s.videoWidth===1280})
   await page.waitForFunction(()=>document.querySelector('[data-player-owner="single"] .mpv-viewport:not(.audio-viewport)'))
   await page.waitForTimeout(250)
-  const user=koffi.load('user32.dll'),find=user.func('uintptr_t __stdcall FindWindowExW(uintptr_t parent, uintptr_t after, str16 name, str16 title)'),visible=user.func('bool __stdcall IsWindowVisible(uintptr_t window)')
-  const main=await desktop.evaluate(({BrowserWindow})=>Number(BrowserWindow.getAllWindows()[0].getNativeWindowHandle().readBigUInt64LE())),surface=Number(find(main,0,'STATIC',null))
-  assert.ok(surface);assert.equal(visible(surface),true)
+  const canvas=page.locator('canvas[data-mpv-surface="single"]')
+  await page.waitForFunction(()=>Number(document.querySelector('canvas[data-mpv-surface="single"]')?.dataset.presentedFrames)>0)
+  await page.locator('.processing-dock:visible').getByRole('button',{name:/编码/}).click()
   await page.getByRole('combobox',{name:'视频编码',exact:true}).click()
   const viewport=page.locator('.select-viewport');await viewport.waitFor()
   assert.equal(await page.locator('.select-scroll').count(),0)
@@ -47,14 +46,15 @@ try {
   const track=await page.getByRole('scrollbar',{name:'选项滚动'}).boundingBox()
   await page.mouse.move(track.x+track.width/2,track.y+12);await page.mouse.down();await page.mouse.move(track.x+track.width/2,track.y+160,{steps:12});await page.mouse.up()
   await page.waitForFunction(()=>document.querySelector('.select-viewport').scrollTop>100)
-  await page.waitForTimeout(200);assert.equal(await page.getByRole('listbox').isVisible(),true,'拖动滑条后菜单意外关闭');assert.equal(visible(surface),true);await shot('dropdown-scrollbar');await page.keyboard.press('Escape')
+  await page.waitForTimeout(200);assert.equal(await page.getByRole('listbox').isVisible(),true,'拖动滑条后菜单意外关闭');assert.equal(await canvas.isVisible(),true);await shot('dropdown-scrollbar');await page.keyboard.press('Escape')
   // Keyboard traversal still scrolls the selected option into view.
   await page.getByRole('combobox',{name:'视频编码',exact:true}).click();await page.keyboard.press('End');await page.keyboard.press('Enter')
   await page.getByRole('combobox',{name:'视频编码',exact:true}).click();await page.getByRole('option',{name:'H.264 · 软件',exact:true}).click()
-  await page.getByRole('heading',{name:'单文件',exact:true}).dblclick();assert.equal(await page.evaluate(()=>getSelection()?.toString()),'')
+  await page.getByRole('heading',{name:'视频处理',exact:true}).dblclick();assert.equal(await page.evaluate(()=>getSelection()?.toString()),'')
+  await page.locator('.processing-dock:visible').getByRole('button',{name:/交付/}).click()
   const editable=page.getByLabel('输出文件名',{exact:true});await editable.fill('selection.mp4');await editable.press('Control+A');assert.equal(await editable.evaluate(e=>e.selectionEnd-e.selectionStart),13)
-  await page.evaluate(()=>window.muxivra.requestExit());await page.getByRole('dialog',{name:'退出 Muxivra',exact:true}).waitFor();await page.waitForTimeout(100);assert.equal(visible(surface),false)
-  await page.getByRole('button',{name:'继续运行',exact:true}).click();await page.getByRole('dialog',{name:'退出 Muxivra',exact:true}).waitFor({state:'hidden'});await page.waitForTimeout(100);assert.equal(visible(surface),true)
+  await page.evaluate(()=>window.muxivra.requestExit());await page.getByRole('dialog',{name:'退出 Muxivra',exact:true}).waitFor();await page.waitForTimeout(100);assert.equal(await canvas.isVisible(),true)
+  await page.getByRole('button',{name:'继续运行',exact:true}).click();await page.getByRole('dialog',{name:'退出 Muxivra',exact:true}).waitFor({state:'hidden'});await page.waitForTimeout(100);assert.equal(await canvas.isVisible(),true)
   await page.getByRole('button',{name:'设置',exact:true}).click()
   assert.equal(await page.locator('.hardware-summary-item').count(),3)
   assert.ok(await page.locator('.hardware-summary-item').evaluateAll(items=>items.every(e=>getComputedStyle(e).borderTopStyle==='solid'&&parseFloat(getComputedStyle(e).borderTopWidth)>=.5)))

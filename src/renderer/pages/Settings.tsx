@@ -1,10 +1,10 @@
 import { tr } from '../lib/i18n'
 import { useState } from 'react'
-import { FolderOpen, Download, Search, Check, Plus, X, RotateCcw } from 'lucide-react'
+import { FolderOpen, Check, Plus, X } from 'lucide-react'
 import type { Snapshot, Settings as SettingsType } from '../../shared/types'
 import { APP_VERSION } from '../../shared/version'
 import mpv from '../../../resources/mpv-manifest.json'
-import { Button, Card, Field, Input, Select, Progress } from '../components/ui'
+import { Button, Card, Field, Input, Select } from '../components/ui'
 import type { RunAction } from '../components/Jobs'
 import { SystemHardware, HardwareDetails } from '../components/SystemHardware'
 import { McpSetup } from '../components/McpSetup'
@@ -25,12 +25,6 @@ export function Settings({snapshot,draft,onChange:setDraft,run,busy,appUpdate}:{
   if(hardwareDetails)return <HardwareDetails snapshot={snapshot} run={run} busy={busy} onBack={()=>setHardwareDetails(false)}/>
   return <div className="settings-layout"><fieldset className="settings-layout settings-form" disabled={busy}>
     <SystemHardware snapshot={snapshot} run={run} busy={busy} onDetails={()=>setHardwareDetails(true)}/>
-    <Card title={tr("转码引擎 · FFmpeg")} aside={<span className={snapshot.engine?'status status-completed':'status status-failed'}>{snapshot.engine?tr("已就绪"):tr("未配置")}</span>}>
-      {snapshot.engine&&<div className="engine-current"><strong>{snapshot.engine.version}</strong><p className="path-text">{snapshot.engine.ffmpegPath}</p></div>}
-      <div className="toolbar wrap"><Button variant="secondary" disabled={busy} onClick={()=> run(async()=>{if(!await window.muxivra.detectEngine())throw new Error(tr("PATH 中未找到 FFmpeg 与 ffprobe"))},tr("引擎已启用"))}><Search size={16}/>{tr("检测 PATH")}</Button><Button variant="secondary" disabled={busy} onClick={()=> run(async()=>{const path=await window.muxivra.selectDirectory('engine');if(path)await window.muxivra.useEngine(path)},tr("引擎已启用"))}><FolderOpen size={16}/>{tr("选择本地引擎")}</Button><Button disabled={busy||['downloading','verifying','extracting'].includes(snapshot.download.state)} onClick={()=> run(()=>window.muxivra.downloadEngine(),tr("引擎已启用"))}><Download size={16}/>{tr("下载引擎")}</Button><span className="hint">Gyan 9.0.2 Essentials · 109 MB</span></div>
-      {snapshot.download.state!=='idle'&&<div className="download-state"><Progress value={snapshot.download.percent}/><p className={snapshot.download.state==='failed'?'error-text':'hint'}>{tr(snapshot.download.message)}</p></div>}
-      {snapshot.engines.length>1&&<details><summary>{tr("已添加的引擎 ·")}{snapshot.engines.length}</summary><div className="engine-list">{snapshot.engines.map(engine=><div key={engine.id}><div><strong>{engine.version}</strong><p className="path-text">{engine.ffmpegPath}</p></div><Button variant="ghost" size="sm" disabled={busy||engine.id===snapshot.engine?.id} onClick={()=> run(()=>window.muxivra.useEngine(engine.id),tr("引擎已切换"))}>{engine.id===snapshot.engine?.id?tr("当前"):<><RotateCcw size={14}/>{tr("切换")}</>}</Button></div>)}</div></details>}
-    </Card>
     <div className="settings-columns"><Card title={tr("播放器")}><div className="setting-value"><span>mpv</span><strong>{mpv.version}</strong></div><div className="setting-value"><span>{tr("来源")}</span><span>{tr("内置 · Windows x64")}</span></div></Card><Card title={tr("外观与任务")}>
       <div className="form-grid"><Field label={tr("界面语言")} changed={(draft.language??'system')!==(snapshot.settings.language??'system')}><Select aria-label={tr("界面语言")} disabled={busy} value={draft.language??'system'} onChange={event=>setDraft({...draft,language:event.target.value as SettingsType['language']})}><option value="system">{tr("跟随系统")}</option><option value="zh-CN">{tr("简体中文")}</option><option value="en">English</option></Select></Field><Field label={tr("界面主题")} changed={draft.theme!==snapshot.settings.theme}><Select disabled={busy} value={draft.theme} onChange={event=>setDraft({...draft,theme:event.target.value as SettingsType['theme']})}><option value="dark">{tr("深色")}</option><option value="light">{tr("浅色")}</option><option value="system">{tr("跟随系统")}</option></Select></Field><Field label={tr("并发任务数")} changed={draft.concurrency!==snapshot.settings.concurrency}><Select disabled={busy} value={draft.concurrency} onChange={event=>setDraft({...draft,concurrency:+event.target.value})}>{[1,2,3,4].map(value=><option key={value} value={value}>{value}</option>)}</Select></Field></div>
       <Button variant="ghost" size="sm" onClick={()=> run(()=>window.muxivra.reveal(snapshot.dataPath))}><FolderOpen size={15}/>{tr("打开配置目录")}</Button>

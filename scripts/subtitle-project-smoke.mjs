@@ -66,7 +66,7 @@ async function currentDocument(){return page.evaluate(()=>window.muxivra.getSess
 async function projectState(){return page.evaluate(()=>window.muxivra.getSubtitleProjectState())}
 async function selectFile(path){await desktop.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]})},path)}
 async function saveDestination(path){await desktop.evaluate(({dialog},path)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:path})},path)}
-async function openEditor(){page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000});await page.locator('.navigation').getByRole('button',{name:'字幕编辑',exact:true}).click()}
+async function openEditor(){page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000});await page.locator('.navigation').getByRole('button',{name:'字幕编辑',exact:true}).click()}
 async function waitPlayer(){return poll(()=>page.evaluate(()=>window.muxivra.playerState('subtitles')),state=>state.ready&&!state.loading&&!!state.path,'Subtitle mpv readiness')}
 async function screenshot(name){await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:`artifacts/qa/${name}.png`,fullPage:true})}
 async function verifyEditorLayout(){

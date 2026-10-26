@@ -53,6 +53,18 @@
     Var muxivraLegacyDirectory
     Var muxivraLegacyVersion
 
+    !ifdef APP_FILENAME
+      Function MuxivraCheckRegisteredLegacyOutputs
+        ReadRegStr $muxivraLegacyDirectory HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+        ReadRegStr $muxivraLegacyVersion HKCU "${UNINSTALL_REGISTRY_KEY}" "DisplayVersion"
+        Call MuxivraCheckLegacyOutputs
+        ReadRegStr $muxivraLegacyDirectory HKLM "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+        ReadRegStr $muxivraLegacyVersion HKLM "${UNINSTALL_REGISTRY_KEY}" "DisplayVersion"
+        Call MuxivraCheckLegacyOutputs
+        ClearErrors
+      FunctionEnd
+    !endif
+
     Function MuxivraCheckLegacyOutputs
       ${If} $muxivraLegacyDirectory == ""
         Return
@@ -83,13 +95,33 @@
 !macro customInit
   ; Previous releases did not include safe removal. Their own uninstallers
   ; cannot be fixed by a new installer, so fail before touching those outputs.
-  ReadRegStr $muxivraLegacyDirectory HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
-  ReadRegStr $muxivraLegacyVersion HKCU "${UNINSTALL_REGISTRY_KEY}" "DisplayVersion"
-  Call MuxivraCheckLegacyOutputs
-  ReadRegStr $muxivraLegacyDirectory HKLM "${INSTALL_REGISTRY_KEY}" "InstallLocation"
-  ReadRegStr $muxivraLegacyVersion HKLM "${UNINSTALL_REGISTRY_KEY}" "DisplayVersion"
-  Call MuxivraCheckLegacyOutputs
+  Call MuxivraCheckRegisteredLegacyOutputs
   ClearErrors
+!macroend
+
+; Stop before replacing the application when a registered old uninstaller
+; cannot start, fails or is cancelled. Personal data is always preserved.
+!macro MuxivraRequireOldUninstallSuccess
+  ${If} ${Errors}
+    DetailPrint "Old uninstaller could not be started. Installation stopped."
+    MessageBox MB_OK|MB_ICONSTOP "无法启动旧版卸载程序，安装已停止。$\r$\nCannot start the old uninstaller. Installation stopped." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+  ${If} $R0 != 0
+    DetailPrint "Old uninstaller failed or was cancelled (exit $R0). Installation stopped."
+    MessageBox MB_OK|MB_ICONSTOP "旧版卸载失败或已取消，安装已停止。$\r$\nThe old uninstall failed or was cancelled. Installation stopped." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+!macroend
+
+!macro customUnInstallCheck
+  !insertmacro MuxivraRequireOldUninstallSuccess
+!macroend
+
+!macro customUnInstallCheckCurrentUser
+  !insertmacro MuxivraRequireOldUninstallSuccess
 !macroend
 
 !macro MuxivraStageFile File

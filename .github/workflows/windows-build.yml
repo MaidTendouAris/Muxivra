@@ -108,6 +108,59 @@ jobs:
       - name: Verify installer preserves user files
         run: node scripts/installer-preservation-smoke.mjs
 
+      - name: Verify packaged subtitle editing workflow
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: npm run smoke:subtitle-tools
+
+      - name: Verify composited mpv textures and resource lifecycle
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: |
+          npm run smoke:player
+          if ($LASTEXITCODE -ne 0) { throw 'Composited player verification failed.' }
+          npm run smoke:player-composition
+          if ($LASTEXITCODE -ne 0) { throw 'GPU texture lifecycle verification failed.' }
+
+      - name: Verify MCP source approvals, history and subtitle selection
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: |
+          npm run smoke:mcp-sources
+          if ($LASTEXITCODE -ne 0) { throw 'MCP source approval verification failed.' }
+          npm run smoke:subtitle-selection
+          if ($LASTEXITCODE -ne 0) { throw 'Subtitle selection verification failed.' }
+
+      - name: Verify packaged preprocessed waveform interactions
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: npm run smoke:waveform
+
+      - name: Verify custom color editing and waveform bindings
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: |
+          npm run smoke:colors
+          if ($LASTEXITCODE -ne 0) { throw 'Custom color verification failed.' }
+          npm run smoke:waveform-shortcuts
+          if ($LASTEXITCODE -ne 0) { throw 'Waveform shortcut verification failed.' }
+
+
+      - name: Verify packaged source editor and resources
+        env:
+          MUXIVRA_EXECUTABLE: ${{ github.workspace }}\release\win-unpacked\Muxivra.exe
+        run: |
+          npm run smoke:source-editor
+          if ($LASTEXITCODE -ne 0) { throw 'Source editor verification failed.' }
+          npm run smoke:source-workspace
+          if ($LASTEXITCODE -ne 0) { throw 'Source workspace verification failed.' }
+          npm run smoke:resources
+          if ($LASTEXITCODE -ne 0) { throw 'Resource management verification failed.' }
+          npm run smoke:asr
+          if ($LASTEXITCODE -ne 0) { throw 'ASR workflow verification failed.' }
+          npm run smoke:processing
+          if ($LASTEXITCODE -ne 0) { throw 'Media workflow verification failed.' }
+
       - name: Upload verified distribution files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -134,5 +187,5 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           "## Muxivra $env:VERSION · Windows x64" >> $env:GITHUB_STEP_SUMMARY
-          "Validated portable ZIP, NSIS EXE, updater metadata, FFmpeg integration and installer data preservation." >> $env:GITHUB_STEP_SUMMARY
+          "Validated portable ZIP, NSIS EXE, updater metadata, FFmpeg integration, installer data preservation." >> $env:GITHUB_STEP_SUMMARY
           Get-Content artifacts/qa/release-contents.json >> $env:GITHUB_STEP_SUMMARY

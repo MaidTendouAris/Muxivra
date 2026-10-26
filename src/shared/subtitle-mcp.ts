@@ -12,7 +12,7 @@ export const subtitleEditOperationSchema=z.discriminatedUnion('type',[
 export const subtitleMcpEditSchema=z.object({projectId:z.string().uuid(),documentId:z.string().min(1).max(128),revision:z.string().regex(/^[a-f0-9]{64}$/),requestKey:z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),summary:z.string().trim().min(1).max(500),operations:z.array(subtitleEditOperationSchema).min(1).max(500)}).strict()
 export type SubtitleMcpEdit=z.infer<typeof subtitleMcpEditSchema>
 export interface SubtitleEditorState {projectId:string;version:string;document:SubtitleDocument;selection:string[];lastSavedAt?:string;dirty:boolean}
-export type SubtitleEditorRequest={id:string;type:'read'}|{id:string;type:'apply';baseline:string;version:string;document:SubtitleDocument;summary:string}
+export type SubtitleEditorRequest=({id:string;type:'read'}|{id:string;type:'select';projectId:string;subtitleId:string;origin:'source'}|{id:string;type:'apply';baseline:string;version:string;document:SubtitleDocument;summary:string;source?:{text:string;hash:string}})&{origin?:'source'}
 export type SubtitleEditorReply={id:string;value:SubtitleEditorState;error?:never}|{id:string;error:string;value?:never}
 export const subtitleEditorStateSchema=z.object({projectId:z.string().uuid(),version:z.string().uuid(),document:subtitleSchema,selection:z.array(z.string().max(128)).max(100000),lastSavedAt:z.string().optional(),dirty:z.boolean()}).strict()
 export interface SubtitleEditorAccess {read():Promise<SubtitleEditorState>;apply(value:{baseline:string;version:string;document:SubtitleDocument;summary:string}):Promise<SubtitleEditorState>}

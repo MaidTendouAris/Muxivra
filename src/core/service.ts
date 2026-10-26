@@ -1,3 +1,11 @@
+import { DownloadSourceStore } from './download-sources'
+import { McpActivityStore } from './mcp/activity'
+import { downloadSourcesSchema,type DownloadSources } from '../shared/download-sources'
+import { AnalysisCache } from './media/analysis-cache'
+import { indexVideo } from './media/video-timing'
+import { prepareProjectAnalysis,readProjectVideoTiming,readProjectWaveform } from './media/project-analysis'
+import { videoTimingSchema,type VideoTiming } from '../shared/video-timing'
+import { subtitleToolsSchema,type SubtitleToolsState } from '../shared/subtitle-tools'
 import { parseAsrParameters,asrPrecisionIssue } from '../shared/asr-parameters'
 import { EventEmitter } from 'node:events'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
@@ -11,6 +19,8 @@ import type { ComponentCapabilities } from '../shared/parameters'
 import { JsonStore } from './storage/json'
 import { PathPolicy, availableOutput, localPath } from './media/paths'
 import { buildPlan } from './media/plan'
+import { editedDeliveryArgs,deliveryDuration } from './media/delivery'
+import { formatCommand } from '../shared/delivery-command'
 import { inspectMedia } from './media/probe'
 import { detectEngine, verifyEngine, installEngine, managedEngines } from './engine'
 import { JobQueue } from './jobs/queue'
@@ -25,7 +35,7 @@ import { ProjectManager } from './projects'
 import { projectImportSchema,projectVideoExportSchema,type ProjectVideoExport,type ProjectImportRequest } from '../shared/projects'
 import type { SubtitleExportFormat } from '../shared/subtitles'
 import { makeWaveform } from './media/waveform'
-import { waveformRequestSchema,type WaveformRequest,type WaveformWindow } from '../shared/waveform'
+import { waveformRequestSchema,waveformWindowSchema,type WaveformRequest,type WaveformWindow } from '../shared/waveform'
 import { migrateLegacyShortcuts } from '../shared/shortcuts'
 import { McpRequestStore } from './mcp/requests'
 import type { DirectoryAccessRequest, TranscodeApprovalRequest, McpRequest } from '../shared/mcp-requests'
@@ -46,6 +56,8 @@ export class MediaService extends EventEmitter {
   private configStore: JsonStore<Configuration>
   readonly projects: ProjectManager
   get subtitleProjects():SubtitleProjectStore{return this.projects.subtitles}
+  readonly downloadSources:DownloadSourceStore
+  readonly mcpActivity:McpActivityStore
   private requestStore: McpRequestStore
   private configuration!: Configuration
   private configOperations: Promise<unknown> = Promise.resolve()
@@ -53,6 +65,9 @@ export class MediaService extends EventEmitter {
   private downloadActive = false
   private downloadController?: AbortController
   private background = new AbortController()
+  private frameController?:AbortController
+  private frameProgress=0
+  private frameTask?:Promise<VideoTiming>
   private waveformController?:AbortController
   private waveformTask?:Promise<WaveformWindow>
   private waveformCache=new Map<string,WaveformWindow>()
@@ -64,7 +79,10 @@ export class MediaService extends EventEmitter {
   constructor(readonly dataPath: string, readonly enginePath: string, readonly defaultOutputPath?: string,hardwareWorkerPath?:string,projectsRoot?:string,asrAdapterPath?:string,asrInstallationDirectory?:string) {
     super(); this.queue = new JobQueue(dataPath); this.hardware=new HardwareStore(dataPath,()=>this.emit('update')); this.configStore = new JsonStore(join(dataPath,'config.json'))
     this.projects = new ProjectManager(projectsRoot??join(defaultOutputPath?dirname(defaultOutputPath):dataPath,'projects'),dataPath,this.paths,()=>this.emit('update'))
+    this.projects.prepareMedia=async(path,directory,signal,progress,options)=>{const media=await this.inspect(path);if(!media.streams.some(stream=>stream.type==='audio'||stream.type==='video'))throw new Error('请选择视频或音频文件');await prepareProjectAnalysis(this.engine,media,directory,signal,progress,options)}
     this.mcpSubtitles=new McpSubtitleEditor(()=>this.settings.mcp,()=>({projectId:this.projects.active()?.id,documentId:this.subtitleProjects.get()?.id}))
+    this.downloadSources=new DownloadSourceStore(join(dataPath,'download-sources.json'),()=>this.emit('update'))
+    this.mcpActivity=new McpActivityStore(join(dataPath,'mcp-activity'),()=>this.emit('update'))
     this.requestStore = new McpRequestStore(join(dataPath,'mcp-requests.json'), () => this.emit('update'))
     this.usage=new UsageMonitor(()=>this.hardware.info,hardwareWorkerPath)
     this.asrModels=new AsrModels(dataPath,()=>this.emit('update'),asrAdapterPath,asrInstallationDirectory??(defaultOutputPath?dirname(defaultOutputPath):dataPath))
@@ -105,6 +123,8 @@ export class MediaService extends EventEmitter {
       catch(error) { this.notice = `默认输出目录不可写：${this.defaultOutputPath}。请选择其他输出目录。${(error as Error).message}` }
     }
     await this.configStore.write(this.configuration)
+    await this.downloadSources.initialize()
+    await this.mcpActivity.initialize()
     await this.asrModels.initialize()
     await this.projects.initialize()
     await this.queue.initialize()
@@ -113,6 +133,7 @@ export class MediaService extends EventEmitter {
         const roots = request.payload.permission === 'input' ? this.settings.mcp.inputRoots : this.settings.mcp.outputRoots
         return roots.some(root => localPath(root).toLowerCase() === request.payload.path.toLowerCase()) ? {} : undefined
       }
+      if(request.kind==='download-sources')return JSON.stringify(this.downloadSources.state().configuration)===JSON.stringify(request.payload.configuration)?{}:undefined
       const fingerprint = createHash('sha256').update(JSON.stringify(request.payload.requests)).digest('hex')
       const jobs = this.queue.jobs.filter(job => job.source === 'mcp' && job.requestKey === `approval-${request.id}`)
       return jobs.length === request.payload.requests.length && jobs.every(job => job.requestFingerprint === fingerprint && job.requestJobCount === request.payload.requests.length && !job.requestExpired) ? { jobIds: jobs.map(job => job.id) } : undefined
@@ -136,6 +157,28 @@ export class MediaService extends EventEmitter {
   async plan(request: JobRequest, source: Source = 'gui', reserved = this.queue.reserved()) {
     this.permission(source,'allowInspect')
     return this.makePlan(request,source,reserved)
+  }
+  private commandReviews=new Map<string,{request:JobRequest;plan:import('../shared/types').Plan;at:number}>()
+  async reviewCommand(request:JobRequest,command:string){
+    const plan=await this.plan(request),args=editedDeliveryArgs(plan,command)
+    plan.commandEdited=JSON.stringify(args)!==JSON.stringify(plan.args)||undefined
+    plan.args=args
+    plan.durationMs=deliveryDuration(args,plan.input.durationMs)
+    const reviewId=randomUUID()
+    for(const [id,value]of this.commandReviews)if(Date.now()-value.at>30*60*1000)this.commandReviews.delete(id)
+    if(this.commandReviews.size>=20)this.commandReviews.delete(this.commandReviews.keys().next().value!)
+    this.commandReviews.set(reviewId,{request:{inputPath:plan.input.path,outputPath:plan.outputPath,options:{...plan.options,conflict:'reject'}},plan,at:Date.now()})
+    return {plan,reviewId}
+  }
+  async submitCommand(reviewId:string){
+    const review=this.commandReviews.get(reviewId)
+    if(!review||Date.now()-review.at>30*60*1000)throw new Error('命令检查已过期，请重新检查')
+    const jobs=await this.queue.submit([review.request],'gui',reviewId,async(request,reserved)=>{
+      const fresh=await this.makePlan(request,'gui',reserved)
+      if(fresh.engine.id!==review.plan.engine.id||fresh.engine.ffmpegPath!==review.plan.engine.ffmpegPath||fresh.input.path!==review.plan.input.path||fresh.outputPath!==review.plan.outputPath)throw new Error('引擎或文件路径已变化，请重新检查命令')
+      return {...fresh,args:review.plan.args,durationMs:deliveryDuration(review.plan.args,fresh.input.durationMs),commandEdited:review.plan.commandEdited}
+    })
+    this.commandReviews.delete(reviewId);return jobs
   }
   private async makePlan(request: JobRequest, source: Source, reserved: Set<string>) {
     const parsed = requestSchema.parse(request)
@@ -186,6 +229,8 @@ export class MediaService extends EventEmitter {
       return { ...action, payload: { requests } }
     })
   }
+  async saveDownloadSources(configuration:DownloadSources,revision:string){if(this.asrModels.state().deployment?.active||this.asrModels.state().download.active||this.downloadActive)throw new Error('Downloads are active; retry after completion');return this.downloadSources.save(configuration,revision)}
+  async requestDownloadSources(input:{configuration:DownloadSources;expectedRevision:string;requestKey:string;reason:string}){this.requireMcpRequests();return this.requestStore.create({kind:'download-sources',requestKey:input.requestKey,reason:input.reason,payload:{configuration:downloadSourcesSchema.parse(input.configuration),expectedRevision:input.expectedRevision}},async action=>{if(action.kind!=='download-sources'||action.payload.expectedRevision!==this.downloadSources.state().revision)throw new Error('Download sources changed; read again');return action})}
   async reviewMcpRequest(id: string, approve: boolean, note?: string): Promise<McpRequest> {
     return this.requestStore.review(id,approve,note,async request => {
       this.requireMcpRequests()
@@ -199,6 +244,7 @@ export class MediaService extends EventEmitter {
         })
         return {}
       }
+      if(request.kind==='download-sources'){await this.saveDownloadSources(request.payload.configuration,request.payload.expectedRevision);return {}}
       // A GUI approval authorizes this exact batch once; it does not change the
       // persistent allowSubmit setting or expand any directory permission.
       const jobs = await this.queue.submit(request.payload.requests,'mcp',`approval-${request.id}`,(job,reserved) => { this.requireMcpRequests(); return this.makePlan(job,'mcp',reserved) })
@@ -233,7 +279,20 @@ export class MediaService extends EventEmitter {
   async moveJob(id:string,direction:'up'|'down'|'first'|'last',source:Source='gui'):Promise<void>{this.permission(source,'allowSubmit');await this.authorizedJob(id,source);const allowed=source==='mcp'?new Set((await this.jobs(source)).map(j=>j.id)):undefined;await this.queue.move(id,direction,allowed)}
   systemHardware(source:Source='gui') {this.permission(source,'allowInspect');return {hardware:structuredClone(this.hardware.info),engine:this.configuration.engine?{version:this.configuration.engine.version,encoders:this.configuration.engine.encoders,decoders:this.configuration.engine.decoders,filters:this.configuration.engine.filters}:undefined,accelerationValidation:'not-tested',note:'引擎列出的编解码器不代表当前设备可用；硬件加速需实际试编码确认。显存优先采用 NVIDIA 驱动物理容量，其余采用 DXGI 系统可用容量；来源与缺失信息逐项标记。'}}
   async refreshHardware():Promise<void>{await this.track(this.hardware.refresh())}
-  async retry(id: string): Promise<Job> { const job = await this.job(id); if (!['failed','cancelled','interrupted'].includes(job.status)) throw new Error('仅失败、取消或中断的任务可重试'); await this.paths.grantFile(job.plan.input.path); if(job.plan.kind==='asr')return this.asrSubmit(job.plan.asr.options);if(job.plan.options.subtitleFile)await this.paths.grantFile(job.plan.options.subtitleFile); await this.paths.grantDirectory(join(job.plan.outputPath,'..')); return (await this.submit([{ inputPath: job.plan.input.path, outputPath: job.plan.outputPath, options: job.plan.options }]))[0] }
+  async retry(id:string):Promise<Job>{
+    const job=await this.job(id)
+    if(!['failed','cancelled','interrupted'].includes(job.status))throw new Error('仅失败、取消或中断的任务可重试')
+    await this.paths.grantFile(job.plan.input.path)
+    if(job.plan.kind==='asr')return this.asrSubmit(job.plan.asr.options)
+    if(job.plan.options.subtitleFile)await this.paths.grantFile(job.plan.options.subtitleFile)
+    await this.paths.grantDirectory(dirname(job.plan.outputPath))
+    const request={inputPath:job.plan.input.path,outputPath:job.plan.outputPath,options:job.plan.options}
+    if(job.plan.commandEdited){
+      const fresh=await this.plan(request),review=await this.reviewCommand({...request,outputPath:fresh.outputPath},formatCommand(fresh.engine.ffmpegPath,[...job.plan.args.slice(0,-1),fresh.outputPath]))
+      return (await this.submitCommand(review.reviewId))[0]
+    }
+    return (await this.submit([request]))[0]
+  }
   async detect(): Promise<Engine | undefined> { const engine = await detectEngine(); if (engine) await this.activate(engine); return engine }
   async selectEngine(pathOrId: string): Promise<Engine> {
     const known = this.configuration.engines.find(e => e.id === pathOrId)
@@ -296,7 +355,7 @@ export class MediaService extends EventEmitter {
   }
   async importProject(request:ProjectImportRequest){
     const value=projectImportSchema.parse(request),path=await this.paths.input(value.path)
-    const info=this.configuration.engine?await this.inspect(path):undefined
+    const info=await this.inspect(path)
     if(info&&!info.streams.some(s=>s.type==='video'||s.type==='audio'))throw new Error('请选择视频或音频文件')
     let subtitle:{name:string;content:Buffer;document:SubtitleDocument}|undefined
     if(value.subtitlePath){
@@ -310,7 +369,12 @@ export class MediaService extends EventEmitter {
     if(result.warning)this.notice=result.warning;return result
   }
   async openProject(id:string){return this.projects.open(id)}
-  async closeProject(id:string){this.waveformController?.abort();await this.waveformTask?.catch(()=>{});await this.projects.close(id)}
+  async rebuildProjectAnalysis(id:string){
+    if(this.queue.jobs.some(job=>job.plan.projectId===id&&['queued','running','paused'].includes(job.status)))throw new Error('项目仍有未结束任务，请先取消或完成任务再重新预处理')
+    this.frameController?.abort();await this.frameTask?.catch(()=>{});this.waveformController?.abort();await this.waveformTask?.catch(()=>{})
+    await this.projects.rebuildAnalysis(id)
+  }
+  async closeProject(id:string){this.frameController?.abort();await this.frameTask?.catch(()=>{});this.waveformController?.abort();await this.waveformTask?.catch(()=>{});await this.projects.close(id)}
   async archiveProject(id:string){
     if(this.queue.jobs.some(j=>j.plan.projectId===id&&['queued','running','paused'].includes(j.status)))throw new Error('项目仍有未结束任务，请先取消或完成任务')
     this.waveformController?.abort();await this.waveformTask?.catch(()=>{})
@@ -375,20 +439,37 @@ export class MediaService extends EventEmitter {
     await writeFile(target, exportSubtitleText(doc, format), { flag: 'wx' })
   }
   private track<T>(task: Promise<T>): Promise<T> { this.backgroundTasks.add(task); void task.finally(() => this.backgroundTasks.delete(task)).catch(() => {}); return task }
+  async importSubtitleStyles(input:string){const path=await this.paths.input(input),extension=extname(path).slice(1).toLowerCase();if(!['ass','ssa'].includes(extension))throw new Error('Choose ASS or SSA');if((await stat(path)).size>10*1024*1024)throw new Error('Subtitle file exceeds 10 MiB');return parseSubtitleText(decodeSubtitle(await readFile(path)),extension as SubtitleExportFormat).styles??[]}
+  async subtitleTools():Promise<SubtitleToolsState>{return subtitleToolsSchema.parse(await new JsonStore(join(this.dataPath,'subtitle-tools.json')).read({}))}
+  private toolsStore?:JsonStore<SubtitleToolsState>
+  async saveSubtitleTools(value:SubtitleToolsState){const parsed=subtitleToolsSchema.parse(value);this.toolsStore??=new JsonStore(join(this.dataPath,'subtitle-tools.json'));await this.toolsStore.write(parsed)}
+  videoFrameProgress(){return this.frameProgress}
+  cancelVideoFrames(){this.frameController?.abort()}
+  async videoFrames(input:string):Promise<VideoTiming>{
+    this.frameController?.abort();const controller=new AbortController();this.frameController=controller;this.frameProgress=0
+    const signal=AbortSignal.any([controller.signal,this.background.signal])
+    const task=this.track((async()=>{const path=await this.paths.input(input),project=this.projects.forMedia(path);if(project){await this.projects.validate(project.id);const timing=await readProjectVideoTiming(project.directory,path,signal);this.frameProgress=100;return timing}const media=await this.inspect(path),file=await stat(media.path),cache=new AnalysisCache(join(this.dataPath,'cache','video-timing')),key=cache.key(['video-timing-v1',this.engine.ffprobePath,media.path,file.size,file.mtimeMs]);if(signal.aborted)throw new Error('Frame indexing cancelled');const saved=await cache.read(key,value=>videoTimingSchema.parse(value));if(saved){this.frameProgress=100;return saved}const frames=await indexVideo(this.engine,media,signal,percent=>{this.frameProgress=percent});if(!signal.aborted)await cache.write(key,frames).catch(()=>{});return frames})());this.frameTask=task
+    try{return await task}finally{if(this.frameTask===task)this.frameTask=undefined}
+  }
   async waveform(input:string,options:Partial<WaveformRequest>={}):Promise<WaveformWindow> {
     const request=waveformRequestSchema.parse(options)
     this.waveformController?.abort();const controller=new AbortController();this.waveformController=controller
     const signal=AbortSignal.any([controller.signal,this.background.signal])
     const task=this.track((async()=>{
+      const path=await this.paths.input(input),project=this.projects.forMedia(path)
+      if(project){await this.projects.validate(project.id);return readProjectWaveform(project.directory,path,request,signal)}
       const media=await this.inspect(input);if(signal.aborted)throw new Error('波形读取已取消')
       const file=await stat(media.path),key=JSON.stringify([this.engine.ffmpegPath,media.path,file.size,file.mtimeMs,request])
       const cached=this.waveformCache.get(key);if(cached){this.waveformCache.delete(key);this.waveformCache.set(key,cached);return cached}
+      const disk=new AnalysisCache(join(this.dataPath,'cache','waveform')),diskKey=disk.key(['waveform-v2',key])
+      const saved=await disk.read(diskKey,value=>waveformWindowSchema.parse(value));if(saved){if(signal.aborted)throw new Error('波形读取已取消');return saved}
       const wave=await makeWaveform(this.engine,media,request,signal)
       if(signal.aborted)throw new Error('波形读取已取消')
+      await disk.write(diskKey,wave).catch(()=>{})
       this.waveformCache.set(key,wave);while(this.waveformCache.size>32)this.waveformCache.delete(this.waveformCache.keys().next().value!)
       return wave
     })());this.waveformTask=task
     try{return await task}finally{if(this.waveformTask===task)this.waveformTask=undefined}
   }
-  async shutdown(): Promise<void> { this.background.abort(); this.downloadController?.abort(); await this.asrModels.shutdown(); await this.projects.shutdown(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush() }
+  async shutdown(): Promise<void> { await this.mcpActivity.flush(); await this.toolsStore?.flush(); this.background.abort(); this.downloadController?.abort(); await this.asrModels.shutdown(); await this.projects.shutdown(); await this.requestStore.shutdown(); await this.queue.shutdown(); await Promise.allSettled([...this.backgroundTasks]); await this.usage.shutdown(); await this.hardware.shutdown(); await this.configOperations.catch(() => {}); await this.configStore.flush() }
 }

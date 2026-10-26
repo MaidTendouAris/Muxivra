@@ -10,6 +10,8 @@ import { parseSubtitleText, serializeAss, srtTextToAss } from './ass'
 import { JsonStore } from '../storage/json'
 import { atomicRename } from '../storage/atomic'
 import { canonicalOutput, localPath, PathPolicy,isWithin } from '../media/paths'
+import { parseProjectSource } from './source-file'
+import { subtitleEditorKey } from '../../shared/subtitle-mcp'
 
 export const SUBTITLE_AUTOSAVE_MS = 60_000
 const MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -237,10 +239,15 @@ export class SubtitleProjectStore {
       await this.store.write(next); this.document = parsed; this.lastRecoveryAt = next.lastRecoveryAt; this.onUpdate()
     })
   }
-  save(document?: SubtitleDocument): Promise<SubtitleDocument | undefined> {
+  save(document?: SubtitleDocument, source?:{text:string;hash:string}): Promise<SubtitleDocument | undefined> {
     return this.exclusive(async () => {
       if (document) {
         const parsed = this.checked(document), next = this.envelope(parsed)
+        if(source){
+          if(subtitleEditorKey(parseProjectSource(source.text,parsed))!==subtitleEditorKey(parsed))throw new Error('源码与字幕文档不一致，已停止保存')
+          const target=await this.safeExisting(parsed.projectPath!)
+          if(!this.baseHash||this.recoveryPending||hash(await this.readFile(target))!==source.hash||source.hash!==this.baseHash)throw new Error('源码已更改，未覆盖当前文件')
+        }
         await this.store.write(next); this.document = parsed; this.lastRecoveryAt = next.lastRecoveryAt
       }
       if (!this.document) return
@@ -251,8 +258,12 @@ export class SubtitleProjectStore {
         if (this.recoveryPending || !this.baseHash || hash(old) !== this.baseHash) {
           this.recoveryPending = true; throw new Error('ASS 工程已被其他程序修改，已停止覆盖；请先另存为工程，再重新导入文件')
         }
+        if(source&&hash(old)!==source.hash)throw new Error('源码已更改，未覆盖当前文件')
+        // An unchanged parsed document must retain source formatting and comments.
+        if(!source&&digest(this.document)===this.savedDigest)return this.get()
         const owned = this.createdProjects.some(item => item.path.toLowerCase() === path.toLowerCase() && item.hash === this.baseHash)
-        const text = this.text(this.document), nextHash = hash(text)
+        const text = source?.text??this.text(this.document), nextHash = hash(text)
+        if(Buffer.byteLength(text)>MAX_FILE_BYTES)throw new Error('ASS 工程超过 10 MB')
         if (nextHash !== this.baseHash) {
           const backupDirectory = join(this.dataPath, 'subtitle-backups', hash(this.document.id).slice(0, 32))
           await mkdir(backupDirectory, { recursive: true })

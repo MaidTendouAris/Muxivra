@@ -1,0 +1,6 @@
+import { z } from 'zod'
+export const videoTimingSchema=z.object({timestampsMs:z.array(z.number().finite().min(0)).min(1).max(2000000),keyframes:z.array(z.number().int().nonnegative()).max(2000000),endMs:z.number().finite().positive(),variable:z.boolean(),streamIndex:z.number().int().nonnegative()}).strict().refine(value=>value.timestampsMs.every((v,i)=>i===0||v>value.timestampsMs[i-1])&&value.endMs>value.timestampsMs.at(-1)!&&value.keyframes.every((v,i)=>v<value.timestampsMs.length&&(i===0||v>value.keyframes[i-1])))
+export type VideoTiming=z.infer<typeof videoTimingSchema>
+/** Frame containing time; end=true gives the exclusive end-frame boundary. */
+export function frameAt(timing:VideoTiming,ms:number,end=false){let lo=0,hi=timing.timestampsMs.length;while(lo<hi){const mid=(lo+hi)>>>1;if(timing.timestampsMs[mid]<ms-(end?0.001:0))lo=mid+1;else hi=mid}if(end)return lo;return Math.max(0,Math.min(timing.timestampsMs.length-1,timing.timestampsMs[lo]===ms?lo:lo-1))}
+export function frameTime(timing:VideoTiming,frame:number){if(!Number.isInteger(frame)||frame<0||frame>timing.timestampsMs.length)throw new Error('Frame is outside the indexed video');return Math.round(frame===timing.timestampsMs.length?timing.endMs:timing.timestampsMs[frame])}

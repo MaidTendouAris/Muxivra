@@ -1,28 +1,27 @@
 import { app, type BrowserWindow } from 'electron'
 import { EventEmitter } from 'node:events'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
 import { readFile, writeFile, mkdir, stat, unlink, link, copyFile } from 'node:fs/promises'
 import { createReadStream, constants } from 'node:fs'
 import { join, basename,resolve } from 'node:path'
 import { MpvIpc } from '../../core/player/ipc'
-import { NativePlayerSurface } from './surface'
+import { CompositedPlayerSurface } from './surface'
 import { inputFormatWhitelist } from '../../shared/media-policy'
 import { emptyPlayerState, type PlayerOwner, type PlayerState, type PlayerRect, type PlayerAction, type PlayerEvent, type PlayerTrack } from '../../shared/player'
 import type { MediaService } from '../../core/service'
 import type { MediaInfo, SubtitleDocument } from '../../shared/types'
 import { serializeAss } from '../../core/subtitles/ass'
-import { defaultShortcuts, mpvShortcutBindings, shortcutBindingsSchema, type ShortcutBindings } from '../../shared/shortcuts'
+import { defaultShortcuts, mpvShortcutBindings, shortcutBindingsSchema,waveformShortcutIds, type ShortcutBindings } from '../../shared/shortcuts'
 
 const properties=['pause','time-pos','duration','volume','mute','speed','track-list','playlist','playlist-pos','path','media-title','video-params','video-out-params','aid','sid','audio-delay','sub-delay','loop-file','loop-playlist','ab-loop-a','ab-loop-b','eof-reached']
 let verifiedBinary:Promise<string>|undefined
-async function bundledExecutable():Promise<string> {
+async function bundledLibrary():Promise<string> {
   if(!verifiedBinary)verifiedBinary=(async()=>{
     const directory=app.isPackaged?join(process.resourcesPath,'mpv'):join(app.getAppPath(),'resources/mpv')
     const manifestPath=app.isPackaged?join(process.resourcesPath,'mpv-manifest.json'):join(app.getAppPath(),'resources/mpv-manifest.json')
-    const manifest=JSON.parse(await readFile(manifestPath,'utf8')),executable=join(directory,'mpv.exe')
+    const manifest=JSON.parse(await readFile(manifestPath,'utf8')),executable=join(directory,'libmpv-2.dll')
     const digest=createHash('sha256');for await(const chunk of createReadStream(executable))digest.update(chunk)
-    if(digest.digest('hex')!==manifest.executableSha256)throw new Error('内置 mpv 校验失败，请重新安装应用')
+    if(digest.digest('hex')!==manifest.librarySha256)throw new Error('内置 libmpv 校验失败，请重新安装应用')
     return executable
   })().catch(error=>{verifiedBinary=undefined;throw error})
   return verifiedBinary
@@ -30,12 +29,13 @@ async function bundledExecutable():Promise<string> {
 
 class PlayerSession extends EventEmitter {
   readonly state:PlayerState
-  readonly surface:NativePlayerSurface
+  readonly surface:CompositedPlayerSurface
   readonly ipc=new MpvIpc()
-  private process?:ChildProcessWithoutNullStreams
   private initialized:Promise<void>
   private abort=new AbortController()
   private closing=false
+  private shutdownPromise?:Promise<void>
+  get isClosing():boolean {return this.closing}
   private timer?:ReturnType<typeof setTimeout>
   private stderr=''
   private fileLoop=false
@@ -46,25 +46,22 @@ class PlayerSession extends EventEmitter {
   editorDocument?:SubtitleDocument
   editorTrack?:number
   constructor(readonly owner:PlayerOwner,readonly window:BrowserWindow,readonly dataPath:string,private shortcuts:ShortcutBindings){
-    super();this.state=emptyPlayerState(owner);this.surface=new NativePlayerSurface(window)
+    super();this.state=emptyPlayerState(owner);this.surface=new CompositedPlayerSurface(window,owner)
+    this.surface.on('error',error=>this.fail(error))
     this.ipc.on('event',event=>this.event(event));this.ipc.on('connection-error',error=>this.fail(error));this.ipc.on('disconnected',()=>{if(!this.closing)this.fail(new Error('mpv 进程已断开'))})
     this.initialized=this.initialize()
     void this.initialized.catch(error=>this.fail(error))
   }
   private async initialize():Promise<void> {
-    const executable=await bundledExecutable();this.abort.signal.throwIfAborted()
+    const library=await bundledLibrary();this.abort.signal.throwIfAborted()
     const pipe=`\\\\.\\pipe\\muxivra-${process.pid}-${this.owner}-${randomUUID()}`
     const input=app.isPackaged?join(process.resourcesPath,'mpv-input.conf'):join(app.getAppPath(),'resources/mpv-input.conf')
     // Force local container demuxing; mpv's playlist parsers and network protocols are excluded.
     const options=`protocol_whitelist=[file,pipe],format_whitelist=[${inputFormatWhitelist}]`
-    const args=['--no-config','--load-scripts=no','--ytdl=no','--osc=no','--osd-level=0','--idle=yes','--force-window=immediate','--keep-open=yes','--pause=yes','--volume=50','--hwdec=auto-safe','--vo=gpu-next','--gpu-api=d3d11','--sub-auto=no','--audio-file-auto=no','--autoload-files=no','--demuxer=lavf',`--demuxer-lavf-o=${options}`,'--input-default-bindings=no','--input-terminal=no',`--input-conf=${input}`,`--input-ipc-server=${pipe}`,`--wid=${this.surface.handle}`]
-    args.push('--msg-level=all=warn','--term-status-msg=')
-    this.process=spawn(executable,args,{windowsHide:true,stdio:['pipe','pipe','pipe'],shell:false})
-    const record=(chunk:Buffer)=>{this.stderr=(this.stderr+chunk.toString()).slice(-5000)}
-    this.process.stdout.on('data',record);this.process.stderr.on('data',record)
-    this.process.on('error',error=>{this.abort.abort();this.fail(error)})
-    this.process.on('exit',code=>{this.abort.abort();if(!this.closing)this.fail(new Error(`mpv 已退出 (${code})${this.stderr?'：'+this.stderr:''}`))})
+    await this.surface.start(library,{'config':'no','load-scripts':'no','ytdl':'no','osc':'no','osd-level':'0','idle':'yes','force-window':'no','keep-open':'yes','pause':'yes','volume':'50','hwdec':'auto-safe','vo':'libmpv','sub-auto':'no','audio-file-auto':'no','autoload-files':'no','demuxer':'lavf','demuxer-lavf-o':options,'input-default-bindings':'no','input-terminal':'no','input-conf':input,'input-ipc-server':pipe,'terminal':'no','msg-level':'all=warn'})
+    this.abort.signal.throwIfAborted()
     await this.ipc.connect(pipe,this.abort.signal)
+    await this.ipc.command(['request_log_messages','warn'])
     await this.applyShortcuts(this.shortcuts)
     for(let index=0;index<properties.length;index++)await this.ipc.command(['observe_property',index+1,properties[index]])
     this.state.version=await this.ipc.command(['get_property','mpv-version']);this.state.ready=true;this.changed()
@@ -79,9 +76,10 @@ class PlayerSession extends EventEmitter {
     this.shortcuts={...bindings}
   }
   async command(command:unknown[]):Promise<any>{try{return await this.ipc.command(command)}catch(error){throw new Error(`${command[0]}：${(error as Error).message}${this.stderr?'\n'+this.stderr:''}`)}}
-  private fail(error:Error):void {this.state.ready=false;this.state.loading=false;this.state.error=error.message;this.surface.hide();this.changed()}
+  private fail(error:Error):void {if(this.closing)return;this.state.ready=false;this.state.loading=false;this.state.error=error.message;this.surface.hide();this.changed()}
   changed():void {if(!this.timer)this.timer=setTimeout(()=>{this.timer=undefined;this.emit('state',structuredClone(this.state))},80)}
   private event(event:any):void {
+    if(event.event==='log-message')this.stderr=(this.stderr+String(event.text??'')).slice(-5000)
     if(event.event==='start-file'){this.state.loading=true;this.state.error=undefined;this.state.eof=false;this.editorTrack=undefined}
     if(event.event==='file-loaded'){this.state.loading=false;this.emit('file-loaded')}
     if(event.event==='end-file'&&event.reason==='error'){this.state.loading=false;this.state.error=`播放失败：${event.error??'无法读取媒体'}${this.stderr?'\n'+this.stderr:''}`}
@@ -125,11 +123,12 @@ class PlayerSession extends EventEmitter {
   show():void {this.updateSurface()}
   private updateSurface():void {if(this.rect)this.surface.update({...this.rect,visible:this.rect.visible&&this.window.isVisible()&&this.state.tracks.some(track=>track.type==='video'&&!track.external)&&!this.state.error})}
   hide():void {this.surface.hide();if(this.state.ready)void this.command(['set_property','pause',true]).catch(()=>{})}
-  async shutdown():Promise<void> {
+  shutdown():Promise<void> {return this.shutdownPromise??=this.close()}
+  private async close():Promise<void> {
     this.closing=true;this.abort.abort();if(this.timer)clearTimeout(this.timer)
-    try {if(this.state.ready)await this.command(['quit'])}catch{}
-    if(this.process?.exitCode===null){await Promise.race([new Promise(resolve=>this.process!.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,1500))]);if(this.process.exitCode===null){this.process.kill();await Promise.race([new Promise(resolve=>this.process!.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,3000))])}}
-    this.ipc.close();this.surface.destroy()
+    await this.initialized.catch(()=>{})
+    await this.operations.catch(()=>{})
+    this.ipc.close();await this.surface.destroy()
   }
 }
 
@@ -143,7 +142,7 @@ export class MpvPlayers extends EventEmitter {
     const update=this.shortcutChanges.catch(()=>{}).then(async()=>{
       const previous=this.shortcuts;if(JSON.stringify(next)===JSON.stringify(previous))return
       this.shortcuts=next
-      const active=()=>[...this.sessions.values()].filter(session=>session.state.ready||!session.state.error)
+      const active=()=>[...this.sessions.values()].filter(session=>!session.isClosing&&(session.state.ready||!session.state.error))
       try{await Promise.all(active().map(session=>session.execute(()=>session.applyShortcuts(next))))}
       catch(error){this.shortcuts=previous;await Promise.allSettled(active().map(session=>session.execute(()=>session.applyShortcuts(previous))));throw error}
     })
@@ -160,13 +159,14 @@ export class MpvPlayers extends EventEmitter {
     return session
   }
   state(owner:PlayerOwner):PlayerState {return structuredClone(this.sessions.get(owner)?.state??emptyPlayerState(owner))}
+  diagnostics(){return [...this.sessions.values()].map(session=>({owner:session.owner,...session.surface.diagnostics}))}
   async releaseProject(directory:string):Promise<void>{
     const root=resolve(directory).toLowerCase()
     for(const [owner,session] of this.sessions){
       const path=session.state.path?resolve(session.state.path).toLowerCase():''
       if(path===root||path.startsWith(root+'\\')||path.startsWith(root+'/')){
         if(session.state.fullscreen)this.setFullscreen(session,false)
-        await session.shutdown();this.sessions.delete(owner);this.emit('state',emptyPlayerState(owner))
+        await session.shutdown();if(this.sessions.get(owner)===session)this.sessions.delete(owner);this.emit('state',emptyPlayerState(owner))
       }
     }
   }
@@ -175,7 +175,7 @@ export class MpvPlayers extends EventEmitter {
     const authorized:string[]=[]
     for(const input of paths){const path=await this.service.paths.input(input);if(!/\.(mp4|mkv|mov|avi|webm|m4v|m4a|mp3|wav|flac|ogg|aac|ts|aiff?|ac3|eac3|dts|ape|wv|amr|au)$/i.test(path))throw new Error('不支持该媒体文件类型');authorized.push(path)}
     const previous=this.sessions.get(owner)
-    if(previous?.state.error&&!previous.state.ready){await previous.shutdown();this.sessions.delete(owner)}
+    if(previous&&(previous.isClosing||(previous.state.error&&!previous.state.ready))){await previous.shutdown();if(this.sessions.get(owner)===previous)this.sessions.delete(owner)}
     const session=this.session(owner)
     await session.execute(async()=>{
       if(append&&session.state.playlist.length+authorized.length>500)throw new Error('播放列表最多 500 个文件')
@@ -187,7 +187,7 @@ export class MpvPlayers extends EventEmitter {
   private setFullscreen(session:PlayerSession,value:boolean):void {session.state.fullscreen=value;this.window.setFullScreen(value);session.changed()}
   syncFullscreen():void {if(!this.window.isFullScreen())for(const session of this.sessions.values()){if(session.state.fullscreen){session.state.fullscreen=false;session.changed()}}}
   async action(owner:PlayerOwner,action:PlayerAction):Promise<void> {
-    const session=this.session(owner)
+    const session=this.sessions.get(owner);if(!session||session.isClosing)return
     return session.execute(async()=>{
       const set=(property:string,value:unknown)=>session.command(['set_property',property,value])
       const seek=(position:number)=>session.command(['seek',Math.max(0,Math.min(position,session.state.durationMs||359999999))/1000,'absolute+exact'])
@@ -219,11 +219,16 @@ export class MpvPlayers extends EventEmitter {
     })
   }
   async addTrack(owner:PlayerOwner,path:string,kind:'audio'|'subtitle'):Promise<void> {
-    const authorized=await this.service.paths.input(path),session=this.session(owner)
+    const session=this.sessions.get(owner);if(!session||session.isClosing)return
+    const authorized=await this.service.paths.input(path)
+    if(session.isClosing)return
     await session.execute(async()=>{await session.command([kind==='audio'?'audio-add':'sub-add',authorized,'select'])})
   }
   async subtitles(owner:PlayerOwner,document:SubtitleDocument):Promise<void> {
-    const session=this.session(owner);session.editorDocument=structuredClone(document)
+    // Editor effects can arrive while a project is being closed. They must not
+    // recreate a renderer or reopen a file after releaseProject has started.
+    const session=this.sessions.get(owner);if(!session||session.isClosing)return
+    session.editorDocument=structuredClone(document)
     if(!session.state.path||session.state.loading)return
     await session.execute(async()=>{
       const cues=document.cues.filter(cue=>cue.text.trim()&&cue.endMs>cue.startMs)
@@ -236,7 +241,9 @@ export class MpvPlayers extends EventEmitter {
     })
   }
   async screenshot(owner:PlayerOwner,target:string):Promise<string> {
-    const session=this.session(owner),output=await this.service.paths.output(target)
+    const session=this.sessions.get(owner)
+    if(!session||session.isClosing)throw new Error('当前没有可截图的视频')
+    const output=await this.service.paths.output(target)
     if(!session.state.tracks.some(track=>track.type==='video'))throw new Error('纯音频无法截图')
     const directory=join(this.service.dataPath,'screenshots');await mkdir(directory,{recursive:true});const temporary=join(directory,`${randomUUID()}.png`)
     try {
@@ -252,6 +259,8 @@ export class MpvPlayers extends EventEmitter {
   }
   private async input(session:PlayerSession,type:string):Promise<void>{
     const owner=session.owner
+    const waveformAction=owner==='subtitles'?waveformShortcutIds.find(action=>action.replace('.','-')===type):undefined
+    if(waveformAction){this.emit('editor-event',{owner,type:'waveform',action:waveformAction,positionMs:session.state.positionMs} satisfies PlayerEvent);return}
     if(['set-start','set-end','undo','redo'].includes(type)){this.emit('editor-event',{owner,type:type as PlayerEvent['type'],positionMs:session.state.positionMs});return}
     if(type==='screenshot'){this.emit('screenshot-request',owner);return}
     if(type==='exit-fullscreen'){if(session.state.fullscreen)this.setFullscreen(session,false);return}

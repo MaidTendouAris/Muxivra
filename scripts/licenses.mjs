@@ -11,7 +11,7 @@ async function walk(directory) {
       const key=`${metadata.name}@${metadata.version}`
       if(!seen.has(key)) {
         let licenseText=''
-        for(const file of await readdir(path)) if(/^(licen[sc]e|copying|notice)(\.|$)/i.test(file) && (await stat(join(path,file))).isFile()) licenseText+=`${file}\n${await readFile(join(path,file),'utf8')}\n`
+        for(const file of await readdir(path)) if(/^(licen[sc]e|copying|notice|thirdpartynotices)(\.|$)/i.test(file) && (await stat(join(path,file))).isFile()) licenseText+=`${file}\n${await readFile(join(path,file),'utf8')}\n`
         seen.set(key,{license:metadata.license??'See upstream notices',repository:typeof metadata.repository==='string'?metadata.repository:metadata.repository?.url??'',text:licenseText})
       }
       try { await walk(join(path,'node_modules')) } catch(error) { if(error.code!=='ENOENT') throw error }

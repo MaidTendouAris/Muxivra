@@ -33,7 +33,7 @@ extraResources:
   - from: resources/mpv
     to: mpv
     filter:
-      - mpv.exe
+      - libmpv-2.dll
       - LICENSE*
       - COPYRIGHT*
       - SOURCES*

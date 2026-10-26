@@ -33,7 +33,7 @@ let desktop,closed=false,version;const errors=[],deleted=new Set()
 const launch=()=>electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000})
 try {
   desktop=await launch();const page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message))
-  await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000});version=await desktop.evaluate(({app})=>app.getVersion())
+  await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000});version=await desktop.evaluate(({app})=>app.getVersion())
   await page.locator('.navigation').getByRole('button',{name:/^任务/}).click()
   const rows=page.locator('.jobs-list .job'),row=id=>page.locator(`.job[data-job-id="${id}"]`)
   const count=async n=>page.waitForFunction(n=>document.querySelectorAll('.jobs-list .job').length===n,n)
@@ -98,7 +98,7 @@ try {
   const historyRoot=join(profile,'job-history'),index=JSON.parse(await readFile(join(historyRoot,'index.json'),'utf8'));assert.equal(index.pageSize,50);assert.equal(index.pages.length,2)
   const saved=(await Promise.all(index.pages.map(async name=>{const json=await readFile(join(historyRoot,name),'utf8'),page=JSON.parse(json);assert.ok(page.jobs.length<=50);assert.equal(name,`page-${createHash('sha256').update(json).digest('hex')}.json`);return page.jobs}))).flat()
   assert.equal(saved.length,98);assert.equal(saved.find(j=>j.id===paused.id).status,'paused');await assert.rejects(readFile(join(profile,'jobs.json')))
-  desktop=await launch();closed=false;const reopened=await desktop.firstWindow();await reopened.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  desktop=await launch();closed=false;const reopened=await desktop.firstWindow();await reopened.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   const after=await reopened.evaluate(()=>window.muxivra.snapshot());assert.equal(after.jobs.length,98);assert.ok(after.jobs.every(j=>!deleted.has(j.id)));assert.equal(after.jobs.find(j=>j.id===paused.id).status,'paused')
   assert.deepEqual(errors,[])
   const report={appVersion:version,executable:process.env.MUXIVRA_EXECUTABLE||'development',legacyFixtures:106,pageSize:50,pagesBefore:3,pagesAfter:2,deletedRecords:deleted.size,singleAndCrossPageBatchDeletion:true,confirmationCancelAndBusyLock:true,activeDeletionDisabled:true,compactRows:true,separateInputOutputReveal:true,secondaryDetails:true,timestampsAndElapsed:true,completeUnicodeLogSegments:segments,realAacExecutionRecord:true,actualArgsAndExitCode:true,fullLogCompletionFooter:true,mediaHashesPreserved:true,migrationAndRestart:true,roundedDropdowns:true,themes:['light','dark'],minimumWindow:[1040,720],errors}

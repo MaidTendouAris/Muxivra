@@ -1,3 +1,4 @@
+import { splitLine,joinSelection } from './subtitle-operations'
 import { tr } from './i18n'
 import type { Cue, SubtitleDocument } from '../../shared/types'
 
@@ -34,19 +35,17 @@ export function pasteCues(cues:Cue[],copied:Cue[],afterId?:string):{cues:Cue[];i
 export function splitCue(cue:Cue[],id:string,atMs:number,cursor:number):{cues:Cue[];ids:string[]} {
   const index=cue.findIndex(item=>item.id===id),source=cue[index]
   if(!source||source.endMs-source.startMs<20)throw new Error(tr("字幕时长至少为 20 毫秒才能拆分"))
-  if(/\{[^}]*\\/.test(source.text))throw new Error(tr("带 ASS 覆盖标签的条目请手动拆分，以保留排版和标签范围"))
+
   const middle=Math.round((source.startMs+source.endMs)/20)*10
   const time=atMs>source.startMs&&atMs<source.endMs?Math.round(atMs/10)*10:middle
   if(time<=source.startMs||time>=source.endMs)throw new Error(tr("拆分位置过于接近字幕边缘"))
   const cut=cursor>0&&cursor<source.text.length?cursor:Math.ceil(source.text.length/2)
-  const first={...source,endMs:time,text:source.text.slice(0,cut).trimEnd()},second={...source,id:crypto.randomUUID(),startMs:time,text:source.text.slice(cut).trimStart()}
-  return {cues:[...cue.slice(0,index),first,second,...cue.slice(index+1)],ids:[first.id,second.id]}
+  return splitLine(cue,id,cut,time,'cursor')
 }
 export function mergeCues(cues:Cue[],ids:ReadonlySet<string>):{cues:Cue[];id:string} {
   const selected=cues.filter(cue=>ids.has(cue.id))
   if(selected.length<2)throw new Error(tr("请选择至少两条字幕"))
-  const first=selected[0],merged={...first,startMs:Math.min(...selected.map(c=>c.startMs)),endMs:Math.max(...selected.map(c=>c.endMs)),text:selected.map(c=>c.text).join('\n')}
-  return {cues:cues.flatMap(cue=>cue.id===first.id?[merged]:ids.has(cue.id)?[]:[cue]),id:first.id}
+  return {cues:joinSelection(cues,ids,'concat'),id:selected[0].id}
 }
 export function replaceSubtitleText(cues:Cue[],search:string,replacement:string,ids?:ReadonlySet<string>,caseSensitive=true):{cues:Cue[];count:number} {
   if(!search)return {cues,count:0}

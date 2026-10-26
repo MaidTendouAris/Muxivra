@@ -30,10 +30,12 @@ interface McpRequestBase {
 
 export type McpRequest = McpRequestBase & (
   { kind: 'directory'; payload: { path: string; permission: 'input' | 'output' } } |
-  { kind: 'transcode'; payload: { requests: JobRequest[] } }
+  { kind: 'transcode'; payload: { requests: JobRequest[] } } |
+  { kind:'download-sources'; payload:{configuration:import('./download-sources').DownloadSources;expectedRevision:string} }
 )
 
 export type McpRequestAction = Pick<DirectoryAccessRequest, 'requestKey' | 'reason'> & (
   { kind: 'directory'; payload: { path: string; permission: 'input' | 'output' } } |
-  { kind: 'transcode'; payload: { requests: JobRequest[] } }
+  { kind: 'transcode'; payload: { requests: JobRequest[] } } |
+  { kind:'download-sources'; payload:{configuration:import('./download-sources').DownloadSources;expectedRevision:string} }
 )

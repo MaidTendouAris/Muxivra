@@ -23,6 +23,8 @@ const progress=():ProjectsState['import']=>({active:false,name:'',phase:'',perce
 interface InitialProject {name?:string;subtitle?:{name:string;content:Buffer;document:SubtitleDocument};resolution?:{width:number;height:number};exportFormat?:'ass'|'ssa'|'srt'}
 const fileHash=async(path:string,signal?:AbortSignal)=>{const hash=createHash('sha256');for await(const chunk of createReadStream(path,{signal}))hash.update(chunk);return hash.digest('hex')}
 export class ProjectManager {
+  /** Service-owned analysis runs on the verified project copy before publication. */
+  prepareMedia?:(path:string,directory:string,signal:AbortSignal,progress:(phase:string,percent:number)=>void,options?:import('../media/project-analysis').ProjectAnalysisOptions)=>Promise<void>
   private entries=new Map<string,{manifest:Manifest;project:MediaProject}>()
   private pointer:JsonStore<{id?:string}>
   private operations:Promise<unknown>=Promise.resolve()
@@ -135,9 +137,9 @@ export class ProjectManager {
     await this.subtitles.save();await this.subtitles.shutdown()
     this.subtitles=this.emptyStore();this.activeId=undefined;await this.pointer.write({});this.update()
   })}
-  save(document:SubtitleDocument){return this.exclusive(async()=>{
+  save(document:SubtitleDocument,source?:{text:string;hash:string}){return this.exclusive(async()=>{
     if(!this.activeId||this.subtitles.get()?.id!==document.id)return undefined
-    const saved=await this.subtitles.save(document);await this.touch(this.activeId);return saved
+    const saved=await this.subtitles.save(document,source);await this.touch(this.activeId);return saved
   })}
   cache(document:SubtitleDocument){return this.exclusive(async()=>{
     if(!this.activeId||this.subtitles.get()?.id!==document.id)return
@@ -165,12 +167,16 @@ export class ProjectManager {
     const controller=new AbortController();this.importController=controller;let committed=false,createdStore:SubtitleProjectStore|undefined
     try{
       const hash=createHash('sha256');let last=0
-      await pipeline(createReadStream(source),new Transform({transform:(chunk,encoding,done)=>{hash.update(chunk);this.copying.transferred+=chunk.length;this.copying.percent=original.size?this.copying.transferred/original.size*90:90;if(Date.now()-last>100){last=Date.now();this.update()}done(null,chunk)}}),createWriteStream(temporary,{flags:'wx'}),{signal:controller.signal})
+      await pipeline(createReadStream(source),new Transform({transform:(chunk,encoding,done)=>{hash.update(chunk);this.copying.transferred+=chunk.length;this.copying.percent=original.size?this.copying.transferred/original.size*25:25;if(Date.now()-last>100){last=Date.now();this.update()}done(null,chunk)}}),createWriteStream(temporary,{flags:'wx'}),{signal:controller.signal})
       const handle=await open(temporary,'r+');try{await handle.sync()}finally{await handle.close()}
       this.copying.phase='校验媒体';this.update();const expected=hash.digest('hex')
       if(await fileHash(temporary,controller.signal)!==expected)throw new Error('媒体副本校验失败，源文件已保留')
       const current=await stat(source);if(current.size!==original.size||current.mtimeMs!==original.mtimeMs||current.ino!==original.ino)throw new Error('复制期间源媒体发生变化，请重新导入')
       await rename(temporary,destination)
+      controller.signal.throwIfAborted()
+      await this.prepareMedia?.(destination,directory,controller.signal,(phase,percent)=>{this.copying.phase=phase;this.copying.percent=30+Math.max(0,Math.min(100,percent))*.65;this.update()})
+      controller.signal.throwIfAborted()
+      this.copying.phase='保存项目';this.copying.percent=96;this.update()
       const manifest:Manifest={format:'muxivra-project',version:1,id,name:initial.name??folder,folder,mediaFile:sourceName,subtitleFile:`${basename(sourceName,extname(sourceName))}.ass`,sourceName,mediaBytes:original.size,createdAt:now,updatedAt:now}
       const store=new SubtitleProjectStore(directory,this.paths,this.update,{mediaPath:destination,projectPath:join(directory,manifest.subtitleFile)});createdStore=store;await store.initialize();await this.paths.grantFile(destination);let document=await store.openMedia(destination)
       if(initial.subtitle){
@@ -199,6 +205,16 @@ export class ProjectManager {
     }
   })}
   async touch(id:string){const entry=this.entries.get(id);if(!entry||entry.project.archived)return;entry.manifest.updatedAt=new Date().toISOString();entry.project.updatedAt=entry.manifest.updatedAt;await new JsonStore(join(entry.project.directory,MANIFEST)).write(entry.manifest);this.update()}
+  rebuildAnalysis(id:string){return this.exclusive(async()=>{
+    const project=this.get(id);await this.safeDirectory(project.directory)
+    if(!this.prepareMedia)throw new Error('项目预处理服务不可用，请先配置 FFmpeg')
+    const controller=new AbortController();this.importController=controller;this.copying={active:true,name:project.name,phase:'准备项目预处理',percent:0,transferred:0,total:0};this.failure=undefined;this.update()
+    try{
+      await this.prepareMedia(project.mediaPath,project.directory,controller.signal,(phase,percent)=>{this.copying.phase=phase;this.copying.percent=Math.max(0,Math.min(100,percent));this.update()},{replace:true,beforePublish:async()=>{await this.safeDirectory(project.directory)}})
+      this.copying.phase='预处理完成';this.copying.percent=100
+    }catch(error){this.failure=controller.signal.aborted?'项目预处理已取消，媒体和字幕均已保留':(error as Error).message;throw new Error(this.failure,{cause:error})}
+    finally{this.importController=undefined;this.copying.active=false;this.update()}
+  })}
   rename(id:string,name:string){return this.exclusive(async()=>{const entry=this.entries.get(id);this.get(id);if(!entry||!name.trim()||name.length>150)throw new Error('项目名称应为 1–150 个字符');await this.safeDirectory(entry.project.directory);entry.manifest.name=name.trim();entry.project.name=name.trim();await this.touch(id)})}
   archive(id:string){return this.exclusive(async()=>{
     const project=this.get(id),entry=this.entries.get(id)!;await this.safeDirectory(project.directory)

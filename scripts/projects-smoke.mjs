@@ -20,7 +20,7 @@ try{
   const pick=path=>desktop.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]})},path)
   const select=async(label,value)=>{await page.getByLabel(label,{exact:true}).click();await page.getByRole('option',{name:value,exact:true}).click()}
   const snapshot=()=>page.evaluate(()=>window.muxivra.snapshot())
-  await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   assert.deepEqual(await page.locator('.nav-section').allTextContents(),['Media','Sub'])
   const names=await page.locator('.navigation nav button').allTextContents();assert.ok(names.findIndex(v=>v==='任务')>names.findIndex(v=>v==='ASR 工作台'));assert.ok(names.findIndex(v=>v==='MCP 交互')<names.findIndex(v=>v==='预设'))
   await nav('字幕编辑');assert.equal(await page.getByRole('button',{name:'收起工程栏',exact:true}).count(),1)

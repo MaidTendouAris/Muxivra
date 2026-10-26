@@ -1,3 +1,4 @@
+import { downloadSourcesSchema } from '../shared/download-sources'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
 import { readdir, realpath, stat } from 'node:fs/promises'
@@ -15,7 +16,7 @@ import { subtitleMcpEditSchema } from '../shared/subtitle-mcp'
 
 const instructions = 'Muxivra performs local media jobs using one shared GUI Tasks page. First call list_skills and read_skill with id workflow, then read the relevant bundled skill. Use the current tools inputSchema, read_skill(parameters) parameterReference and actual engine capabilities as the reference for supported options. Only access configured input/output directories. Read get_system_hardware before choosing an encoder. Missing/error hardware fields and not-tested acceleration must not be treated as verified support. Inspect files and use plan_transcode before submit_jobs. Submit structured options, never shell commands. A submitted job is queued, not completed: poll get_job for its final status, elapsed time and estimated remaining time. pause_job/resume_job retain progress; move_job changes pending execution order. Use a stable requestKey on client retries; cancellation is explicit. Original files are preserved and existing outputs are never silently overwritten. Respect the user’s requested operation. For subtitle correction, translation or ASS effects in the current GUI editor, read_skill(subtitles), get_current_subtitle_project and read_current_subtitles first; edit_current_subtitles uses revision-checked structured operations, not file paths or transcode jobs.'
 const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] })
-export function createMediaMcp(service: MediaService): McpServer {
+export function createMediaMcp(service: MediaService,observe?:(failed:boolean)=>void): McpServer {
   const settings=service.settings.mcp,snapshot=service.snapshot()
   const directories=JSON.stringify({inputRoots:settings.inputRoots,outputRoots:settings.outputRoots,defaultOutputPath:snapshot.defaultMcpOutputPath,permissions:{inspect:settings.allowInspect,submit:settings.allowSubmit,control:settings.allowCancel,subtitleEdit:!!settings.allowSubtitleEdit}})
   const context=` Connection directories and permissions: ${directories}. The installation outputs directory is provided by default. Input directories require manual authorization, either in Settings or by approving request_directory_access in the MCP interaction page. request_transcode asks for one-time task approval; pending is not approved or submitted. Poll get_request without repeating or changing the requestKey. Already authorized operations may still use submit_jobs directly. No MCP tool approves requests. For vague requests such as faster, better quality or smaller files, read_skill(goals) before planning. `+(settings.allowInspect?`System hardware at connection: ${JSON.stringify(snapshot.hardware)}. Engine acceleration support is not runtime-tested.`:'')
@@ -30,8 +31,8 @@ export function createMediaMcp(service: MediaService): McpServer {
   const writable = { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   function register(name: string, description: string, inputSchema: z.ZodRawShape, handler: (args: any) => Promise<unknown>, annotations: { readOnlyHint: boolean; destructiveHint: boolean; openWorldHint: boolean; idempotentHint?: boolean } = readOnly) {
     server.registerTool(name,{ description, inputSchema, annotations },async args => {
-      try { return result(await handler(args)) }
-      catch (error) { return { content: [{ type: 'text' as const, text: (error as Error).message }], isError: true } }
+      try { const value=await handler(args);observe?.(false);return result(value) }
+      catch (error) { observe?.(true);return { content: [{ type: 'text' as const, text: (error as Error).message }], isError: true } }
     })
   }
   register('list_skills','列出随应用发布的离线 Markdown 操作指南。连接后先读取 workflow，再按任务选择其他指南。',{},async()=>{requireInspect();return skillCatalog()})
@@ -42,6 +43,8 @@ export function createMediaMcp(service: MediaService): McpServer {
   const requestKey=z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),reason=z.string().min(1).max(1000)
   register('request_directory_access','申请现有本机文件夹的输入或输出访问权限。仅建立待审申请，用户须在 MCP 交互页批准后权限才生效。请指定最小必要目录及用途，不能自行批准。',{path:pathSchema,permission:z.enum(['input','output']),reason,requestKey},async args=>service.requestDirectoryAccess(args),{...writable,idempotentHint:true})
   register('request_transcode','申请一次性创建 1 至 500 个转码任务。输入输出目录须已获授权；提交权限关闭时也可申请人工批准。pending 不表示已入队。批准后 get_request 返回 jobIds，再 get_job 查询最终结果。',{requests:z.array(requestSchema).min(1).max(500),reason,requestKey},async args=>service.requestTranscode(args),{...writable,idempotentHint:true})
+  register('get_download_sources','Read official sources, user mirrors and current revision. Changes require request_download_sources and explicit GUI confirmation.',{},async()=>{requireInspect();return service.downloadSources.state()})
+  register('request_download_sources','Propose replacement download source configuration. Always pending until the user confirms in MCP Interaction, including previously authorized clients. Preserve unrelated entries and use the revision from get_download_sources. Never approve automatically.',{configuration:downloadSourcesSchema,expectedRevision:z.string().regex(/^[a-f0-9]{64}$/),requestKey,reason},async args=>service.requestDownloadSources(args),{...writable,idempotentHint:true})
   register('get_request','查询 MCP 申请、人工审核结果与批准后的任务 ID，不需要分析查询权限。申请失败时不得猜测未执行，应先核对关联任务与输出。',{id:z.string().uuid()},async({id})=>service.mcpRequest(id))
   register('list_requests','列出当前共享凭据下的操作申请，可按状态过滤。仅返回申请及审核数据，不读取未授权文件内容。',{status:z.enum(['pending','approving','approved','rejected','failed']).optional(),limit:z.number().int().min(1).max(1000).default(100)},async({status,limit})=>service.mcpRequests().filter(r=>!status||r.status===status).slice(0,limit))
   register('inspect_media','检查授权目录内的本地媒体文件，返回轨道、编码、时长与尺寸。',{ path: pathSchema },async ({ path }) => service.inspect(path,'mcp'))
@@ -97,13 +100,22 @@ export class McpHost {
     for await (const chunk of request) { size += chunk.length; if (size > 1024*1024) { deny(413,'请求体超过 1 MB'); return }; chunks.push(chunk) }
     let body: unknown
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { deny(400,'JSON 无效'); return }
-    const server = createMediaMcp(this.service)
+    const activity=await this.service.mcpActivity.begin(body)
+    let observedFailure=false,output='',bytes=0,done=false
+    const capture=(chunk:unknown)=>{if(typeof chunk!=='string'&&!Buffer.isBuffer(chunk))return;bytes+=Buffer.byteLength(chunk);if(bytes<=512*1024)output+=chunk.toString()}
+    const write=response.write,end=response.end
+    response.write=function(this:ServerResponse,...args:Parameters<typeof write>){capture(args[0]);return write.apply(this,args)} as typeof write
+    response.end=function(this:ServerResponse,...args:Parameters<typeof end>){capture(args[0]);return end.apply(this,args)} as typeof end
+    const finish=async(interrupted=false)=>{if(done)return;done=true;let result:unknown={httpStatus:response.statusCode,truncated:bytes>512*1024};if(bytes<=512*1024&&output){try{result=JSON.parse(output)}catch{result={httpStatus:response.statusCode,preview:output.slice(0,8000)}}}const rpc=result as {error?:unknown;result?:{isError?:boolean}};await this.service.mcpActivity.finish(activity,interrupted?'interrupted':response.statusCode>=400||observedFailure||rpc?.error||rpc?.result?.isError?'failed':'succeeded',result)}
+    response.once('finish',()=>{void finish().catch(()=>{})})
+    response.once('close',()=>{if(!response.writableFinished)void finish(true).catch(()=>{})})
+    const server = createMediaMcp(this.service,failed=>{observedFailure ||= failed})
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     this.transports.add(transport)
     const cleanup = () => { this.transports.delete(transport); void transport.close(); void server.close() }
     response.once('close',cleanup)
     await server.connect(transport)
-    await transport.handleRequest(request,response,body)
+    try{await transport.handleRequest(request,response,body);if(response.writableFinished)await finish()}catch(error){observedFailure=true;await finish();throw error}
   }
   async stop(): Promise<void> {
     for (const transport of this.transports) await transport.close()

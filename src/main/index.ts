@@ -1,10 +1,11 @@
+import { downloadSourcesSchema } from '../shared/download-sources'
 import { translateUi } from '../shared/i18n'
 import { resolveUiLocale } from '../shared/locale'
 import type { OpenDialogOptions,SaveDialogOptions } from 'electron'
 import { asrRecognitionSchema,asrBackends } from '../shared/asr'
 import { asrEnvironmentRequestSchema } from '../shared/asr-environments'
 import { asrAssetIdSchema } from '../shared/asr-catalog'
-import { asrDeploymentRequestSchema } from '../shared/asr-deployment'
+import { asrDeploymentRequestSchema,asrResourceRequestSchema,asrConfigureModelSchema } from '../shared/asr-deployment'
 import { initializeDownloadNetworking } from './download-network'
 import { checkDownloadNetwork } from '../core/download-network'
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Tray, Menu, nativeImage, clipboard, session } from 'electron'
@@ -32,6 +33,8 @@ import { AppUpdates } from './app-updater'
 import { UpdateFixture } from './update-fixture'
 import { GuardedNsisUpdater } from './nsis-updater'
 import { SubtitleEditorBridge } from './subtitle-editor-bridge'
+import { SourceEditors,SourceEditorCloseCancelled } from './source-editors'
+import { readMediaMetadata } from './media-metadata'
 
 app.setName('Muxivra')
 protocol.registerSchemesAsPrivileged([{ scheme: 'muxivra', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
@@ -44,6 +47,7 @@ let exitPrompt: ExitPrompt | undefined
 let appUpdates: AppUpdates
 let runtimeStopped=false
 let subtitleEditorBridge:SubtitleEditorBridge
+let sourceEditors:SourceEditors
 const engineGrants = new Set<string>()
 const mainLocale=()=>resolveUiLocale(service?.settings.language??'system',service?.systemLanguages??app.getPreferredSystemLanguages())
 const ui=(text:string,...values:unknown[])=>translateUi(text,mainLocale(),...values)
@@ -107,11 +111,13 @@ async function finishExit():Promise<void> {
   exitInProgress=true
   setExitPrompt(exitSummary('closing'))
   try {
+    await sourceEditors?.shutdown()
     runtimeStopped=true
     await players?.shutdown(); await mcp.stop(); await service.shutdown(); quitting=true
     if(installingUpdate)await appUpdates.install();else app.quit()
     tray?.destroy()
   } catch(error) {
+    if(error instanceof SourceEditorCloseCancelled){setExitPrompt(undefined);return}
     quitting=false
     if(installingUpdate)appUpdates.markInstallError(error)
     setExitPrompt({...exitSummary('confirm'),error:(error as Error).message})
@@ -131,6 +137,8 @@ function registerIpc(): void {
     return callback(...args)
   })
   handle('snapshot',() => service.snapshot())
+  handle('openSourceEditor',async input=>{const request=z.object({path:pathSchema.optional()}).strict().optional().parse(input);if(request?.path&&!service.projects.state().items.some(project=>project.subtitles.some(track=>track.path===request.path))&&!service.paths.files.has(request.path))throw new Error('文本文件未获授权，请通过文件选择器打开');await sourceEditors.open(request?.path)})
+  handle('saveSourceSubtitle',async(doc,text,hash)=>{const source=z.object({text:z.string().max(10*1024*1024),hash:z.string().regex(/^[a-f0-9]{64}$/)}).parse({text,hash});const saved=await service.projects.save(subtitleSchema.parse(doc),source);if(!saved)throw new Error('工程已切换，源码未保存');return saved})
   handle('subtitleEditorReply',reply=>{if(!reply||typeof reply!=='object'||!z.string().uuid().safeParse(reply.id).success)throw new Error('字幕回复无效');subtitleEditorBridge.reply(reply)})
   handle('asrImport',async input=>{
     const request=z.object({name:z.string().max(200),backend:z.enum(asrBackends),runtimeId:z.string().max(100).optional(),environmentId:z.string().uuid().optional()}).strict().parse(input)
@@ -158,10 +166,18 @@ function registerIpc(): void {
   handle('asrDownload',(kind,runtime)=>{kind=z.enum(['model','runtime']).parse(kind);runtime=z.enum(['cpu','cuda']).default('cpu').parse(runtime);if(service.asrModels.state().download.active)throw new Error('已有 ASR 下载正在进行');void service.asrModels.install(kind,runtime).catch(()=>{})})
   handle('asrCancelDownload',()=>service.asrModels.cancelDownload())
   handle('asrDetectNvidia',()=>service.asrModels.detectNvidia())
+  handle('asrDeploymentPlan',request=>service.asrModels.deploymentPlan(asrDeploymentRequestSchema.parse(request)))
   handle('asrDeployNvidia',request=>{const parsed=asrDeploymentRequestSchema.parse(request);void service.asrModels.deployNvidia(parsed).catch(()=>{})})
+  handle('asrDownloadResource',request=>{const parsed=asrResourceRequestSchema.parse(request);void service.asrModels.downloadResource(parsed).catch(()=>{})})
+  handle('asrImportResource',async request=>{const parsed=asrResourceRequestSchema.parse(request),selected=await openDialog({title:parsed.kind==='whisper-runtime'?'导入 Whisper CUDA 运行包目录':'导入完整资源包目录（含 muxivra-resource.json）',properties:['openDirectory']});if(!selected.filePaths[0])return;void service.asrModels.importResource(parsed,selected.filePaths[0]).catch(()=>{})})
+  handle('asrConfigureModel',request=>{const parsed=asrConfigureModelSchema.parse(request);void service.asrModels.configureModel(parsed).catch(()=>{})})
+  handle('asrImportModelAsset',async request=>{const parsed=z.object({name:z.string().trim().min(1).max(200),backend:z.enum(['whisper.cpp','qwen3-asr','moss-transcribe-diarize'])}).strict().parse(request),selected=await openDialog({title:'导入模型文件至安装目录',properties:parsed.backend==='whisper.cpp'?['openFile']:['openDirectory'],...(parsed.backend==='whisper.cpp'?{filters:[{name:'Whisper GGML',extensions:['bin','ggml']}]}:{})});if(!selected.filePaths[0])return;return service.asrModels.importModelAsset({...parsed,modelPath:selected.filePaths[0]})})
   handle('asrCancelDeployment',()=>service.asrModels.cancelDeployment())
   handle('asrDeploymentLog',()=>service.asrModels.deploymentLog())
-  handle('asrCheckNetwork',()=>checkDownloadNetwork())
+  handle('downloadSources',()=>service.downloadSources.state())
+  handle('saveDownloadSources',(value,revision)=>service.saveDownloadSources(downloadSourcesSchema.parse(value),z.string().regex(/^[a-f0-9]{64}$/).parse(revision)))
+  handle('mcpActivity',page=>service.mcpActivity.page(z.number().int().min(1).max(10000000).parse(page)))
+  handle('asrCheckNetwork',async()=>{const sources=service.downloadSources.state();return {...await checkDownloadNetwork(),sources,appVersion:APP_VERSION,platform:process.platform,architecture:process.arch}})
   handle('asrSubmit',options=>service.asrSubmit(options))
   handle('asrResult',id=>service.asrResult(z.string().uuid().parse(id)))
   handle('asrRaw',(id,index)=>service.asrRaw(z.string().uuid().parse(id),z.number().int().min(0).max(100000).parse(index)))
@@ -200,6 +216,17 @@ function registerIpc(): void {
     const path = await service.paths.grantDirectory(selected.filePaths[0]); if (purpose === 'engine') engineGrants.add(path); return path
   })
   handle('acceptDrop',async paths => { z.array(pathSchema).max(500).parse(paths); return Promise.all(paths.map((path: string) => service.paths.grantFile(path))) })
+  handle('mediaMetadata',async path=>readMediaMetadata(await service.paths.input(pathSchema.parse(path))))
+  handle('importLyrics',async()=>{
+    const selected=await openDialog({title:'导入歌词',properties:['openFile'],filters:[{name:'歌词文本',extensions:['lrc','txt']}]})
+    if(!selected.filePaths[0])return
+    const path=await service.paths.grantFile(selected.filePaths[0]);if((await stat(path)).size>64000)throw new Error('歌词文件不能超过 64 KB')
+    const text=new TextDecoder('utf-8',{fatal:true}).decode(await readFile(path)).replace(/^\uFEFF/,'')
+    if(/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text))throw new Error('歌词文件需要使用 UTF-8 文本格式')
+    return text
+  })
+  handle('reviewCommand',(request,command)=>service.reviewCommand(request,z.string().max(100000).parse(command)))
+  handle('submitCommand',reviewId=>service.submitCommand(z.string().uuid().parse(reviewId)))
   handle('inspect',path => service.inspect(path)); handle('plan',request => service.plan(request)); handle('submit',(requests,key) => service.submit(requests,'gui',key))
   handle('planBatch',requests => service.planBatch(requests))
   handle('cancel',id => service.cancel(z.string().uuid().parse(id))); handle('retry',id => service.retry(z.string().uuid().parse(id)))
@@ -225,6 +252,7 @@ function registerIpc(): void {
   }
   handle('importProject',request=>service.importProject(projectImportSchema.parse(request)))
   handle('cancelProjectImport',()=>service.projects.cancelImport())
+  handle('rebuildProjectAnalysis',id=>service.rebuildProjectAnalysis(z.string().uuid().parse(id)))
   handle('openProject',id=>service.openProject(z.string().uuid().parse(id)))
   handle('closeProject',async id=>{id=z.string().uuid().parse(id);if(service.projects.state().activeId!==id)return;await players.releaseProject(service.projects.get(id).directory);await service.closeProject(id)})
   handle('renameProject',(id,name)=>service.projects.rename(z.string().uuid().parse(id),z.string().trim().min(1).max(150).parse(name)))
@@ -269,6 +297,9 @@ function registerIpc(): void {
   handle('playerScreenshot',owner=>takeScreenshot(playerOwnerSchema.parse(owner)))
   handle('playerSubtitles',(owner,document)=>players.subtitles(playerOwnerSchema.parse(owner),subtitleSchema.parse(document)))
   handle('playerAddTrack',async(owner,kind)=>{owner=playerOwnerSchema.parse(owner);kind=z.enum(['audio','subtitle']).parse(kind);const selected=await openDialog({title:kind==='audio'?'载入音轨':'载入字幕',properties:['openFile'],filters:[kind==='audio'?{name:'音频',extensions:['m4a','mp3','wav','flac','ogg','aac','ac3','dts']}:{name:'字幕',extensions:['srt','ass','ssa','vtt']}]});if(selected.filePaths[0])await players.addTrack(owner,await service.paths.grantFile(selected.filePaths[0]),kind)})
+  handle('videoFrames',path=>service.videoFrames(pathSchema.parse(path)));handle('videoFrameProgress',()=>service.videoFrameProgress());handle('cancelVideoFrames',()=>service.cancelVideoFrames())
+  handle('importSubtitleStyles',path=>service.importSubtitleStyles(pathSchema.parse(path)))
+  handle('subtitleTools',()=>service.subtitleTools());handle('saveSubtitleTools',value=>service.saveSubtitleTools(value))
   handle('waveform',(path,options) => service.waveform(path,options))
   handle('reveal',async path => {
     pathSchema.parse(path)
@@ -303,7 +334,7 @@ if (hasLock) void app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(path).toString())
   })
   const data = app.getPath('userData')
-  const engines = process.env.MUXIVRA_ENGINE_PATH ? resolve(process.env.MUXIVRA_ENGINE_PATH) : join(process.env.LOCALAPPDATA ?? app.getPath('home'),'Muxivra','engines','ffmpeg')
+  const engines = process.env.MUXIVRA_ENGINE_PATH ? resolve(process.env.MUXIVRA_ENGINE_PATH) : join(app.isPackaged?dirname(app.getPath('exe')):app.getAppPath(),'engines','ffmpeg')
   const outputs = join(app.isPackaged?dirname(app.getPath('exe')):app.getAppPath(),'outputs')
   const projects=process.env.MUXIVRA_SMOKE==='1'?join(data,'projects'):join(dirname(outputs),'projects')
   service = new MediaService(data,engines,outputs,join(__dirname,'hardware-worker.js'),projects,app.isPackaged?join(process.resourcesPath,'asr','adapter.py'):join(app.getAppPath(),'resources','asr','adapter.py'),process.env.MUXIVRA_SMOKE==='1'?join(data,'installation'):undefined); service.systemLanguages=process.env.MUXIVRA_SMOKE==='1'&&process.env.MUXIVRA_TEST_SYSTEM_LANGUAGES?process.env.MUXIVRA_TEST_SYSTEM_LANGUAGES.split(','):app.getPreferredSystemLanguages(); await service.initialize(); mcp = new McpHost(service)
@@ -331,6 +362,7 @@ if (hasLock) void app.whenReady().then(async () => {
   if (service.settings.mcp.enabled) { try { await mcp.configure(service.settings.mcp) } catch (e) { service.mcpState = { running: false, error: (e as Error).message } } }
   let updateTimer: ReturnType<typeof setTimeout> | undefined
   service.on('update',() => { localizeTray(); if (updateTimer) return; updateTimer = setTimeout(() => { updateTimer = undefined; if (window && !window.isDestroyed()) window.webContents.send('muxivra:update',service.snapshot()) },150) })
+  sourceEditors=new SourceEditors(service,()=>subtitleEditorBridge,devUrl,join(__dirname,'../preload/source-editor.js'),()=>window)
   registerIpc()
   tray = new Tray(nativeImage.createFromPath(join(app.getAppPath(),'resources/icon.png')).resize({ width: 32,height: 32 }))
   localizeTray()
@@ -340,5 +372,8 @@ if (hasLock) void app.whenReady().then(async () => {
   // network request changes updater state without delaying the application.
   void appUpdates.startup(service.snapshot().settings.autoUpdate!==false)
   // Automated desktop checks run in an isolated profile and can exit without an interactive prompt.
-  if (process.env.MUXIVRA_SMOKE === '1') ipcMain.handle('muxivra:smoke-exit',() => requestExit(true))
+  if (process.env.MUXIVRA_SMOKE === '1') {
+    ipcMain.handle('muxivra:smoke-exit',() => requestExit(true))
+    ipcMain.handle('muxivra:smoke-player-diagnostics',() => players.diagnostics())
+  }
 }).catch(async error => { dialog.showErrorBox('Muxivra 启动失败',String(error)); quitting = true; await players?.shutdown().catch(()=>{});await mcp?.stop().catch(()=>{});await service?.shutdown().catch(() => {}); app.quit() })

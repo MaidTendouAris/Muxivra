@@ -5,7 +5,7 @@ import { asrEnvironmentSchema,type AsrEnvironment } from './asr-environments'
 import { pythonAsrBackends } from './asr-parameters'
 import type { ManagedAsrAsset } from './asr-catalog'
 import type { PythonDiscovery } from './asr-environments'
-import type { AsrDeployment,NvidiaDetection } from './asr-deployment'
+import type { AsrDeployment,NvidiaDetection,AsrResource } from './asr-deployment'
 
 export const asrBackends = ['whisper.cpp', 'custom',...pythonAsrBackends] as const
 const recognitionFields={
@@ -70,7 +70,7 @@ export interface AsrDownload {
   active:boolean;phase:'idle'|'preparing'|'copying'|'downloading'|'verifying'|'extracting'|'completed'|'failed'|'cancelled';
   label:string;percent:number;received:number;total:number;message:string
 }
-export interface AsrState { models:AsrModel[];runtimes:{id:string;name:string;executable:string}[];download:AsrDownload;environments?:AsrEnvironment[];storageRoot?:string;adapterPath?:string;assets?:ManagedAsrAsset[];discovery?:PythonDiscovery;deployment?:AsrDeployment;nvidia?:NvidiaDetection }
+export interface AsrState { models:AsrModel[];runtimes:{id:string;name:string;executable:string}[];download:AsrDownload;environments?:AsrEnvironment[];storageRoot?:string;adapterPath?:string;assets?:ManagedAsrAsset[];discovery?:PythonDiscovery;deployment?:AsrDeployment;nvidia?:NvidiaDetection;resources?:AsrResource[] }
 export interface AsrImportRequest {name:string;backend:typeof asrBackends[number];modelPath:string;executable?:string;environmentId?:string}
 
 // Backend timestamps refer to decoded chunk audio. Only the adapter maps them

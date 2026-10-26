@@ -22,7 +22,7 @@ export const optionsSchema = z.object({
   streamIndices: z.array(z.number().int().min(0).max(1024)).max(64).optional(),
   subtitles: z.enum(['copy','none']), conflict: z.enum(['reject','number']), presetId: z.string().max(128).optional(),
   advanced:advancedSchema.optional(),filters:z.array(filterSettingSchema).max(64).optional(),encoderOptions:z.array(encoderSettingSchema).max(120).optional(),
-  metadata:z.array(z.object({key:z.string().regex(/^[a-zA-Z0-9_.-]{1,80}$/),value:z.string().max(2000).refine(v=>!/[\x00-\x1f]/.test(v))}).strict()).max(64).optional(),
+  metadata:z.array(z.object({key:z.string().regex(/^[a-zA-Z0-9_.-]{1,80}$/),value:z.string().max(64000)}).strict().refine(item=>item.key==='lyrics'?!/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(item.value):item.value.length<=2000&&!/[\x00-\x1f]/.test(item.value),'元数据过长或包含控制字符')).max(64).optional(),
   subtitleFile:z.string().min(1).max(32760).refine(v=>!/[\x00-\x1f]/.test(v)).optional(),
   subtitleMode:z.enum(['burn','embed']).optional(),
   codecParameters:z.record(z.string().refine(k=>internalEncoderParameters.some(p=>p.key===k),'未知编码器内部参数'),safeOptionValue).optional()

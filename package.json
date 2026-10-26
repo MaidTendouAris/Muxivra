@@ -1,6 +1,6 @@
 {
   "name": "muxivra",
-  "version": "0.25.0",
+  "version": "0.33.0",
   "description": "本地媒体处理、批量转码与字幕工作台",
   "main": "out/main/index.js",
   "author": "Muxivra contributors",
@@ -21,6 +21,7 @@
     "package:dir": "npm run prepare:mpv && npm run build && npm run licenses && electron-builder --win --x64 --dir",
     "smoke:desktop": "node scripts/desktop-smoke.mjs",
     "smoke:player": "node scripts/player-smoke.mjs",
+    "smoke:player-composition": "node scripts/player-composition-smoke.mjs",
     "smoke:parameters": "node scripts/parameters-smoke.mjs",
     "smoke:ui": "node scripts/ui-smoke.mjs",
     "smoke:mcp-setup": "node scripts/mcp-setup-smoke.mjs",
@@ -40,7 +41,18 @@
     "smoke:subtitle-mcp": "node scripts/subtitle-mcp-smoke.mjs",
     "smoke:asr-progress": "node scripts/asr-progress-smoke.mjs",
     "smoke:asr-network": "node scripts/asr-network-smoke.mjs",
-    "smoke:asr-fallback": "node scripts/asr-official-fallback-smoke.mjs"
+    "smoke:asr-fallback": "node scripts/asr-official-fallback-smoke.mjs",
+    "smoke:subtitle-tools": "node scripts/subtitle-tools-smoke.mjs",
+    "smoke:source-editor": "node scripts/source-editor-smoke.mjs",
+    "smoke:resources": "node scripts/resources-smoke.mjs",
+    "smoke:project-lifecycle": "node scripts/project-lifecycle-smoke.mjs",
+    "smoke:source-workspace": "node scripts/source-editor-workspace-smoke.mjs",
+    "smoke:processing": "node scripts/processing-smoke.mjs",
+    "smoke:waveform": "node scripts/subtitle-waveform-interaction-smoke.mjs",
+    "smoke:colors": "node scripts/subtitle-color-smoke.mjs",
+    "smoke:waveform-shortcuts": "node scripts/waveform-shortcuts-smoke.mjs",
+    "smoke:mcp-sources": "node scripts/mcp-sources-smoke.mjs",
+    "smoke:subtitle-selection": "node scripts/subtitle-selection-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
@@ -52,6 +64,7 @@
     "electron-updater": "6.8.10",
     "koffi": "3.3.2",
     "lucide-react": "1.52.0",
+    "mediainfo.js": "0.3.8",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "tailwind-merge": "^3.0.0",
@@ -68,10 +81,16 @@
     "electron": "44.5.1",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
+    "monaco-editor": "0.57.0",
     "playwright": "^1.0.0",
     "tailwindcss": "4.3.3",
     "typescript": "^5.9.0",
     "vite": "7.3.6",
     "vitest": "4.1.11"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "3.4.17"
+    }
   }
 }

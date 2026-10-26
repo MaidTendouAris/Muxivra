@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultShortcuts, formatShortcut, isShortcutInput, matchShortcut, migrateLegacyShortcuts, mpvShortcutBindings, resolveShortcuts, shortcutBindingsSchema, shortcutFromEvent, toMpvKey, validateShortcuts } from '../../src/shared/shortcuts'
+import { defaultShortcuts, formatShortcut, isShortcutInput, matchShortcut, migrateLegacyShortcuts, mpvShortcutBindings, resolveShortcuts, shortcutBindingsSchema, shortcutFromEvent, shortcutFromWheel,matchWheelShortcut,toMpvKey, validateShortcuts } from '../../src/shared/shortcuts'
 
 const event=(code:string,patch:Partial<KeyboardEvent>={})=>({code,ctrlKey:false,altKey:false,shiftKey:false,metaKey:false,isComposing:false,...patch}) as KeyboardEvent
 describe('可编辑快捷键',()=>{
@@ -57,4 +57,35 @@ describe('可编辑快捷键',()=>{
     expect(replaced.has('SPACE')).toBe(false);expect(replaced.has('s')).toBe(false);expect(replaced.get('Ctrl+p')).toBe('script-message muxivra-toggle')
     expect(formatShortcut('Ctrl+Shift+KeyZ')).toBe('Ctrl + Shift + Z');expect(formatShortcut('Space')).toBe('空格');expect(formatShortcut('')).toBe('未设置')
   })
+  it('fills new waveform bindings for older installations without stealing a customized keyboard key',()=>{
+    const legacy=Object.fromEntries(Object.entries(defaultShortcuts).filter(([id])=>!id.startsWith('waveform.')))
+    legacy['player.screenshot']='Alt+KeyR'
+    const resolved=shortcutBindingsSchema.parse(legacy)
+    expect(resolved['player.screenshot']).toBe('Alt+KeyR')
+    expect(resolved['waveform.reset']).toBe('')
+    expect(resolved['waveform.panLeft']).toBe('WheelUp')
+    expect(resolved['waveform.panRight']).toBe('WheelDown')
+    expect(resolved['player.toggle']).toBe('Space')
+    expect(validateShortcuts(resolved)).toEqual([])
+    expect(shortcutBindingsSchema.parse({...resolved,'waveform.panLeft':''})['waveform.panLeft']).toBe('')
+  })
+  it('captures and matches configurable mouse wheel modifiers while keeping native playback keyboard-only',()=>{
+    const wheel=(patch:Partial<WheelEvent>={})=>({deltaX:0,deltaY:120,ctrlKey:false,shiftKey:false,altKey:false,metaKey:false,...patch})
+    expect(shortcutFromWheel(wheel())).toBe('WheelDown')
+    expect(shortcutFromWheel(wheel({deltaX:-60,deltaY:1}))).toBe('WheelUp')
+    expect(shortcutFromWheel(wheel({deltaY:-3,ctrlKey:true,shiftKey:true}))).toBe('Ctrl+Shift+WheelUp')
+    expect(shortcutFromWheel(wheel({deltaY:0}))).toBeUndefined()
+    expect(matchWheelShortcut(wheel(),'waveform.panRight',defaultShortcuts)).toBe(true)
+    expect(matchWheelShortcut(wheel({ctrlKey:true}),'waveform.panRight',defaultShortcuts)).toBe(false)
+    expect(matchWheelShortcut(wheel({ctrlKey:true,deltaY:-50}),'waveform.zoomIn',defaultShortcuts)).toBe(true)
+    expect(shortcutFromEvent(event('WheelUp'))).toBeUndefined()
+    expect(toMpvKey('Ctrl+WheelUp')).toBeUndefined()
+    expect(mpvShortcutBindings(defaultShortcuts,'single').has('Alt+r')).toBe(false)
+    expect(mpvShortcutBindings(defaultShortcuts,'subtitles').get('Alt+r')).toBe('script-message muxivra-waveform-reset')
+    expect(mpvShortcutBindings(defaultShortcuts,'subtitles').has('WHEEL_UP')).toBe(false)
+    expect(shortcutBindingsSchema.safeParse({...defaultShortcuts,'player.toggle':'Ctrl+WheelUp'}).success).toBe(false)
+    expect(shortcutBindingsSchema.safeParse({...defaultShortcuts,'waveform.zoomIn':'WheelUp'}).success).toBe(false)
+    expect(formatShortcut('Ctrl+Shift+WheelUp')).toBe('Ctrl + Shift + 滚轮上 / 左')
+  })
+
 })

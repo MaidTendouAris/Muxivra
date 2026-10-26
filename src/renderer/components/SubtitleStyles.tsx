@@ -1,3 +1,5 @@
+import { SubtitleStyleLibrary } from './SubtitleStyleLibrary'
+import { ColorPicker } from './ColorPicker'
 import { tr } from '../lib/i18n'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Plus, Copy, Trash2 } from 'lucide-react'
@@ -10,6 +12,8 @@ const alignments=['左下','下方居中','右下','左侧居中','居中','右�
 export function SubtitleStyles({document,onChange,onBack,run}:{document:SubtitleDocument;onChange:(document:SubtitleDocument)=>void;onBack:()=>void;run:RunAction}) {
   const [index,setIndex]=useState(0),styles=document.styles??[defaultSubtitleStyle()],style=styles[Math.min(index,styles.length-1)]
   const [name,setName]=useState(style.name)
+  const [colorDialog,setColorDialog]=useState<{label:string;key:'primaryColour'|'secondaryColour'|'outlineColour'|'backColour';hex:string;alpha:number}>()
+  useEffect(()=>setColorDialog(undefined),[document.id,index])
   useEffect(()=>setName(style.name),[style.name,index])
   function update(patch:Partial<SubtitleStyle>) { onChange({...document,styles:styles.map((s,i)=>i===index?{...s,...patch}:s)}) }
   function rename() {
@@ -27,7 +31,7 @@ export function SubtitleStyles({document,onChange,onBack,run}:{document:Subtitle
   const number=(label:string,key:keyof SubtitleStyle,min=0,max=10000,step=1)=><Field label={tr(label)}><Input type="number" min={min} max={max} step={step} value={String(style[key])} onChange={event=>{if(!event.target.value)return;const value=Number(event.target.value);if(Number.isFinite(value)&&value>=min&&value<=max)update({[key]:value})}}/></Field>
   const colour=(label:string,key:'primaryColour'|'secondaryColour'|'outlineColour'|'backColour')=>{
     const hex=assColourToHex(style[key]),alpha=parseInt(parseAssColour(style[key]).slice(0,2),16)
-    return <div className="subtitle-colour-field"><Field label={tr(label)}><Input type="color" value={hex} onChange={event=>update({[key]:hexToAssColour(event.target.value,alpha)})}/></Field><Field label={tr("透明度（0–255）")}><Input type="number" min={0} max={255} value={alpha} onChange={event=>{const value=Number(event.target.value);if(Number.isInteger(value)&&value>=0&&value<=255)update({[key]:hexToAssColour(hex,value)})}}/></Field></div>
+    return <div className="subtitle-colour-field"><Field label={tr(label)}><Button className="subtitle-colour-button" variant="secondary" aria-label={tr(label)} onClick={()=>setColorDialog({label:tr(label),key,hex,alpha})}><i style={{backgroundColor:hex}}/><span>{hex.toUpperCase()}</span><small>{tr('透明度')}: {alpha}</small></Button></Field></div>
   }
   const info=(key:string,value:string)=>onChange({...document,scriptInfo:{...document.scriptInfo,[key]:value}})
   return <div className="subtitle-style-page"><div className="subtitle-secondary-heading"><Button variant="ghost" onClick={onBack}><ArrowLeft size={16}/>{tr("返回字幕编辑")}</Button><h2>{tr("样式与脚本设置")}</h2></div>
@@ -36,6 +40,8 @@ export function SubtitleStyles({document,onChange,onBack,run}:{document:Subtitle
       <div className="subtitle-inner-card subtitle-colours">{colour(tr("文字颜色"),'primaryColour')}{colour(tr("次要颜色"),'secondaryColour')}{colour(tr("描边颜色"),'outlineColour')}{colour(tr("阴影颜色"),'backColour')}</div>
       <div className="subtitle-inner-card"><div className="form-grid"><Field label={tr("边框方式")}><Select value={style.borderStyle} onChange={e=>update({borderStyle:+e.target.value})}><option value="1">{tr("描边与阴影")}</option><option value="3">{tr("不透明背景框")}</option></Select></Field>{number(tr("描边宽度"),'outline',0,100,.1)}{number(tr("阴影距离"),'shadow',0,100,.1)}{number(tr("水平缩放（%）"),'scaleX',1,1000,.1)}{number(tr("垂直缩放（%）"),'scaleY',1,1000,.1)}{number(tr("字间距"),'spacing',-100,1000,.1)}{number(tr("旋转角度"),'angle',-360,360,.1)}{number(tr("左边距"),'marginL',0,99999)}{number(tr("右边距"),'marginR',0,99999)}{number(tr("垂直边距"),'marginV',0,99999)}{number(tr("字体编码标识"),'encoding',0,255)}</div></div>
     </Card></div>
+    <SubtitleStyleLibrary style={style} styles={styles} run={run} onImport={value=>{const at=styles.findIndex(s=>s.name===value.name);onChange({...document,styles:at<0?[...styles,value]:styles.map((s,i)=>i===at?value:s)});setIndex(at<0?styles.length:at)}}/>
+    {colorDialog&&<ColorPicker title={colorDialog.label} value={colorDialog.hex} alpha={colorDialog.alpha} onClose={()=>setColorDialog(undefined)} onApply={(hex,alpha)=>update({[colorDialog.key]:hexToAssColour(hex,alpha??0)})}/>}
     <Card title={tr("脚本设置")}><div className="form-grid subtitle-script-grid"><Field label={tr("脚本标题")}><Input value={document.scriptInfo?.Title??''} onChange={e=>info('Title',e.target.value)}/></Field><Field label={tr("作者")}><Input value={document.scriptInfo?.['Original Script']??''} onChange={e=>info('Original Script',e.target.value)}/></Field><Field label={tr("脚本宽度")}><Input type="number" min={1} max={100000} value={document.scriptInfo?.PlayResX??1920} onChange={e=>{if(+e.target.value>0)info('PlayResX',e.target.value)}}/></Field><Field label={tr("脚本高度")}><Input type="number" min={1} max={100000} value={document.scriptInfo?.PlayResY??1080} onChange={e=>{if(+e.target.value>0)info('PlayResY',e.target.value)}}/></Field><Field label={tr("换行方式")}><Select value={document.scriptInfo?.WrapStyle??'0'} onChange={e=>info('WrapStyle',e.target.value)}><option value="0">{tr("0 · 智能换行，上行优先")}</option><option value="1">{tr("1 · 从行尾换行")}</option><option value="2">{tr("2 · 仅手动换行")}</option><option value="3">{tr("3 · 智能换行，下行优先")}</option></Select></Field><Field label={tr("描边与阴影随分辨率缩放")}><Select value={document.scriptInfo?.ScaledBorderAndShadow??'yes'} onChange={e=>info('ScaledBorderAndShadow',e.target.value)}><option value="yes">{tr("是")}</option><option value="no">{tr("否")}</option></Select></Field><Field label={tr("色彩矩阵")}><Select value={document.scriptInfo?.['YCbCr Matrix']??'TV.709'} onChange={e=>info('YCbCr Matrix',e.target.value)}>{['None','TV.601','PC.601','TV.709','PC.709','TV.2020','PC.2020'].map(v=><option value={v} key={v}>{v}</option>)}</Select></Field></div></Card>
   </div>
 }

@@ -1,3 +1,4 @@
+import { resolveDownloadSource } from '../download-sources'
 import { randomUUID,createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir,readFile,writeFile,appendFile,rename,rm,readdir,stat,realpath } from 'node:fs/promises'
@@ -20,16 +21,17 @@ export const deploymentManifest={
   uvWheel:{url:'https://files.pythonhosted.org/packages/2a/8e/d23278bb327d2a75dc1d033c81b7fe23bbb28e363e02e7f306abd047924a/uv-0.13.1-py3-none-win_amd64.whl',sha256:'4f693cd4feb52f08f30474c4612f24be2050472609be65b9960b635f286da284',size:15404994},
   moss:{url:'https://codeload.github.com/OpenMOSS/MOSS-Transcribe-Diarize/zip/e3bdd93f8ad58418e04659818efd5fd87a0bc486',sha256:'94392db4ca851a271d732a8ba51b44f8ea8c303e60c921737b4ac5256f107f1a',size:217416}
 } as const
-export interface DeploymentContext {root:string;signal:AbortSignal;logPath:string;update:(value:Partial<AsrDeployment>)=>void;gpu:NvidiaDevice;profile:CudaProfile}
+export interface DeploymentContext {root:string;signal:AbortSignal;logPath:string;update:(value:Partial<AsrDeployment>)=>void;gpu:NvidiaDevice;profile:CudaProfile;offline?:boolean;captureStderr?:boolean}
 export interface PreparedEnvironment {pythonPath:string;probe:AsrProbe;directory:string}
 export function deploymentEnvironment(root:string,gpuUuid?:string):NodeJS.ProcessEnv {
   const env=asrProcessEnvironment(root)
   for(const key of Object.keys(env)){if(/^UV_|^PIP_|^PYTHON(?:HOME|PATH|USERBASE|PYCACHEPREFIX)$|^VIRTUAL_ENV$|^CONDA_PREFIX$|^CUDA_VISIBLE_DEVICES$/i.test(key))delete env[key]}
-  return {...env,UV_SYSTEM_CERTS:'true',UV_CACHE_DIR:join(root,'cache','uv'),UV_LINK_MODE:'copy',UV_PYTHON_INSTALL_DIR:join(root,'python'),UV_PYTHON_BIN_DIR:join(root,'bin'),UV_TOOL_DIR:join(root,'tools'),UV_HTTP_TIMEOUT:'120',UV_HTTP_RETRIES:'4',PIP_CACHE_DIR:join(root,'cache','pip'),PIP_CONFIG_FILE:process.platform==='win32'?'NUL':'/dev/null',PIP_INDEX_URL:'https://pypi.org/simple',PYTHONNOUSERSITE:'1',PYTHONUSERBASE:join(root,'python-user'),PYTHONPYCACHEPREFIX:join(root,'cache','pycache'),...(gpuUuid?{CUDA_VISIBLE_DEVICES:gpuUuid,CUDA_DEVICE_ORDER:'PCI_BUS_ID'}:{})}
+  return {...env,UV_SYSTEM_CERTS:'true',UV_CACHE_DIR:join(root,'cache','uv'),UV_LINK_MODE:'hardlink',UV_PYTHON_INSTALL_DIR:join(root,'python'),UV_PYTHON_BIN_DIR:join(root,'bin'),UV_TOOL_DIR:join(root,'tools'),UV_HTTP_TIMEOUT:'120',UV_HTTP_RETRIES:'4',PIP_CACHE_DIR:join(root,'cache','pip'),PIP_CONFIG_FILE:process.platform==='win32'?'NUL':'/dev/null',PIP_INDEX_URL:resolveDownloadSource('https://pypi.org/simple'),UV_PYTHON_INSTALL_MIRROR:resolveDownloadSource('https://releases.astral.sh/github/python-build-standalone/releases/download'),PYTHONNOUSERSITE:'1',PYTHONUSERBASE:join(root,'python-user'),PYTHONPYCACHEPREFIX:join(root,'cache','pycache'),...(gpuUuid?{CUDA_VISIBLE_DEVICES:gpuUuid,CUDA_DEVICE_ORDER:'PCI_BUS_ID'}:{})}
 }
 export async function deploymentCommand(executable:string,args:string[],context:DeploymentContext,timeout=3600000):Promise<string>{
-  context.signal.throwIfAborted();await mkdir(dirname(context.logPath),{recursive:true});await appendFile(context.logPath,JSON.stringify({executable,args})+'\n')
-  const env=deploymentEnvironment(context.root,context.gpu.uuid),networkUrl=args.find(value=>/^https:\/\//.test(value))??(args.includes('python')&&args.includes('install')?deploymentManifest.pythonDownloadUrl:undefined)
+  args=args.map(value=>value.startsWith("https://")?resolveDownloadSource(value):value)
+  context.signal.throwIfAborted();await mkdir(join(context.root,'temp'),{recursive:true});if((await realpath(join(context.root,'temp'))).toLowerCase()!==resolve(context.root,'temp').toLowerCase())throw new Error('ASR 临时目录包含重定向，请保留安装目录内的普通目录');await mkdir(dirname(context.logPath),{recursive:true});await appendFile(context.logPath,JSON.stringify({executable,args})+'\n')
+  const env={...deploymentEnvironment(context.root,context.gpu.uuid),...(context.offline?{UV_OFFLINE:'true',UV_PYTHON_DOWNLOADS:'never',PIP_NO_INDEX:'1',HF_HUB_OFFLINE:'1',TRANSFORMERS_OFFLINE:'1'}:{})},networkUrl=context.offline?undefined:args.find(value=>/^https:\/\//.test(value))??(args.includes('python')&&args.includes('install')?deploymentManifest.pythonDownloadUrl:undefined)
   const network=networkUrl?await downloadProcessNetwork(networkUrl,env):undefined
   if(network)await appendFile(context.logPath,JSON.stringify({type:'deployment-network',url:safeDownloadUrl(networkUrl!),mode:network.summary,systemCertificates:true})+'\n')
   context.signal.throwIfAborted()
@@ -39,7 +41,7 @@ export async function deploymentCommand(executable:string,args:string[],context:
   try{trackChildTree(child)}catch(error){failure=error as Error;child.kill()}
   context.signal.addEventListener('abort',abort,{once:true});if(context.signal.aborted)abort()
   const log=(text:string)=>{bytes+=Buffer.byteLength(text);if(bytes>8*1024**2){failure=new Error('部署输出超过大小限制');abort();return}tail=(tail+text).slice(-12000);writes=writes.then(()=>appendFile(context.logPath,text)).catch(error=>{failure=error as Error;abort()});if(Date.now()-last>150){last=Date.now();context.update({logTail:tail})}}
-  child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');child.stdout.on('data',(text:string)=>{output+=text;log(text)});child.stderr.on('data',log);child.on('error',error=>{failure=error});child.stdin.on('error',()=>{});child.stdin.end()
+  child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');child.stdout.on('data',(text:string)=>{output+=text;log(text)});child.stderr.on('data',(text:string)=>{if(context.captureStderr)output+=text;log(text)});child.on('error',error=>{failure=error});child.stdin.on('error',()=>{});child.stdin.end()
   try{const code=await new Promise<number|null>(done=>child.once('close',done));await writes;context.signal.throwIfAborted();if(failure)throw failure;if(code!==0)throw new Error(`部署步骤失败（退出码 ${code}）：${tail.slice(-1800)}`);return output.trim()}
   finally{clearTimeout(timer);context.signal.removeEventListener('abort',abort);await writes;context.update({logTail:tail})}
 }

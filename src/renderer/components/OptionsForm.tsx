@@ -7,8 +7,8 @@ import { Field, Input, Select, Button } from './ui'
 import { AdvancedOptions } from './AdvancedOptions'
 import { filterLibrary } from '../../shared/parameters'
 const filterKind=(name:string)=>filterLibrary.find(f=>f.name===name)?.kind
-const videoNames:Record<string,string>={libx264:'H.264 · 软件',libx265:'H.265 · 软件',libsvtav1:'AV1 · 软件',libaom_av1:'AV1 · AOM',libvpx_vp9:'VP9',h264_nvenc:'H.264 · NVIDIA',hevc_nvenc:'H.265 · NVIDIA',av1_nvenc:'AV1 · NVIDIA',h264_qsv:'H.264 · Intel',hevc_qsv:'H.265 · Intel',h264_amf:'H.264 · AMD',hevc_amf:'H.265 · AMD',png:'PNG',mjpeg:'JPEG',gif:'GIF',libwebp:'WebP'}
-const audioNames:Record<string,string>={aac:'AAC',libmp3lame:'MP3',flac:'FLAC',pcm_s16le:'PCM 16 位',pcm_s24le:'PCM 24 位',pcm_s32le:'PCM 32 位',libopus:'Opus',libvorbis:'Vorbis',alac:'ALAC',ac3:'AC-3',eac3:'E-AC-3'}
+export const videoNames:Record<string,string>={libx264:'H.264 · 软件',libx265:'H.265 · 软件',libsvtav1:'AV1 · 软件',libaom_av1:'AV1 · AOM',libvpx_vp9:'VP9',h264_nvenc:'H.264 · NVIDIA',hevc_nvenc:'H.265 · NVIDIA',av1_nvenc:'AV1 · NVIDIA',h264_qsv:'H.264 · Intel',hevc_qsv:'H.265 · Intel',h264_amf:'H.264 · AMD',hevc_amf:'H.265 · AMD',png:'PNG',mjpeg:'JPEG',gif:'GIF',libwebp:'WebP'}
+export const audioNames:Record<string,string>={aac:'AAC',libmp3lame:'MP3',flac:'FLAC',pcm_s16le:'PCM 16 位',pcm_s24le:'PCM 24 位',pcm_s32le:'PCM 32 位',libopus:'Opus',libvorbis:'Vorbis',alac:'ALAC',ac3:'AC-3',eac3:'E-AC-3'}
 export function OptionsForm({ value, onChange, presets, engine, compact = false }: { value: TranscodeOptions; onChange: (value: TranscodeOptions) => void; presets: Preset[]; engine?: Engine; compact?: boolean }) {
   const [advanced,setAdvanced]=useState(false)
   const update = (patch: Partial<TranscodeOptions>) => onChange({ ...value, ...patch, presetId: undefined })

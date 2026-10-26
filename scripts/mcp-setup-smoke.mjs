@@ -21,7 +21,7 @@ const errors=[]
 const report={executable:process.env.MUXIVRA_EXECUTABLE||'development build',errors}
 try {
   clipboardBefore=await desktop.evaluate(({clipboard})=>clipboard.readText())
-  const page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  const page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   await page.locator('.navigation').getByRole('button',{name:'设置',exact:true}).click()
   await page.locator('.mcp-guide-button').last().waitFor()
   assert.equal(await page.getByRole('button',{name:'复制完整连接提示词',exact:true}).isDisabled(),true)
@@ -46,7 +46,7 @@ try {
   client=new Client({name:'muxivra-setup-verification',version:'1.0'})
   await client.connect(new StreamableHTTPClientTransport(new URL(saved.mcp.url),{requestInit:{headers:{Authorization:`Bearer ${saved.settings.mcp.token}`}}}))
   const context=client.getInstructions();assert.ok(context.includes(JSON.stringify(saved.defaultMcpOutputPath)));assert.ok(context.includes(JSON.stringify(root)));assert.ok(context.includes('read_skill(goals)'));assert.ok(!context.includes(saved.settings.mcp.token));report.connectionContextProvidesDirectories=true
-  const tools=(await client.listTools()).tools;assert.equal(tools.length,23)
+  const tools=(await client.listTools()).tools;assert.equal(tools.length,25)
   const catalog=JSON.parse((await client.callTool({name:'list_skills',arguments:{}})).content[0].text);assert.equal(catalog.length,8)
   for(const skill of catalog){const document=await client.callTool({name:'read_skill',arguments:{id:skill.id}});assert.equal(document.isError,undefined);assert.ok(JSON.parse(document.content[0].text).markdown.includes('name: muxivra-'))}
   const audio=JSON.parse((await client.callTool({name:'read_skill',arguments:{id:'audio'}})).content[0].text)

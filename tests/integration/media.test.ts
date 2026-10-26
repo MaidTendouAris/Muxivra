@@ -11,6 +11,7 @@ import { McpHost } from '../../src/mcp/server'
 import { detectEngine } from '../../src/core/engine'
 import { run } from '../../src/core/engine/process'
 import { defaultOptions } from '../../src/core/presets'
+import { formatCommand } from '../../src/shared/delivery-command'
 import { isWithin } from '../../src/core/media/paths'
 import { parseSrt } from '../../src/core/subtitles/srt'
 import { JsonStore } from '../../src/core/storage/json'
@@ -34,6 +35,25 @@ beforeAll(async()=>{
 })
 afterAll(async()=>{for(const client of clients)await client.close().catch(()=>{});await host?.stop();await service?.shutdown();if(root&&isWithin(resolve('.test-data'),root))await rm(root,{recursive:true,force:true})})
 describe('真实 FFmpeg 与共享队列',()=>{
+  it('交付命令修改进入真实队列，失败重试保留修改且输出冲突重新拒绝',async()=>{
+    const req=request('edited-delivery.mp4'),plan=await service.plan(req),args=[...plan.args]
+    args[args.indexOf('-crf')+1]='31'
+    args.splice(-1,0,'-t','0.7')
+    const review=await service.reviewCommand(req,formatCommand(plan.engine.ffmpegPath,args))
+    expect(review.plan.commandEdited).toBe(true);expect(review.plan.durationMs).toBe(700)
+    const [job]=await service.submitCommand(review.reviewId),done=await waitJob(job.id)
+    expect(done.status).toBe('completed');expect(done.executedArgs![done.executedArgs!.indexOf('-crf')+1]).toBe('31')
+    expect((await service.inspect(done.plan.outputPath)).durationMs).toBeLessThan(900)
+    const conflict=request('review-conflict.mp4'),base=await service.plan(conflict),checked=await service.reviewCommand(conflict,formatCommand(base.engine.ffmpegPath,base.args))
+    await writeFile(conflict.outputPath,'existing output')
+    await expect(service.submitCommand(checked.reviewId)).rejects.toThrow('输出已存在')
+    expect(await readFile(conflict.outputPath,'utf8')).toBe('existing output')
+    const invalid=request('retry-edited.mp4'),original=await service.plan(invalid),bad=[...original.args];bad[bad.indexOf('-c:v')+1]='unknown_encoder_fixture'
+    const badReview=await service.reviewCommand(invalid,formatCommand(original.engine.ffmpegPath,bad)),[badJob]=await service.submitCommand(badReview.reviewId)
+    expect((await waitJob(badJob.id)).status).toBe('failed')
+    const retry=await service.retry(badJob.id),retried=await waitJob(retry.id)
+    expect(retried.status).toBe('failed');expect(retried.executedArgs).toContain('unknown_encoder_fixture')
+  })
   it('自动创建并提供 MCP 默认 outputs，输入仍需手动授权且其他输出不自动开放',async()=>{
     const directory=join(root,'temp-install','outputs'),local=new MediaService(join(root,'default-output-profile'),join(root,'default-output-engines'),directory)
     try {
@@ -199,7 +219,7 @@ describe('MCP HTTP 实际客户端',()=>{
   it('官方 SDK 客户端发现工具、计划、提交、查询与重连',async()=>{
     port=await freePort();const settings=service.settings;settings.mcp={...settings.mcp,enabled:true,port,inputRoots:[root],outputRoots:[output]};await service.saveSettings(settings);await host.configure(settings.mcp)
     async function connect(){const client=new Client({name:'muxivra-integration',version:'1.0'});await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`),{requestInit:{headers:{Authorization:`Bearer ${settings.mcp.token}`}}}));clients.push(client);return client}
-    const client=await connect();const tools=await client.listTools();expect(tools.tools.map(t=>t.name)).toContain('submit_jobs');expect(tools.tools).toHaveLength(23)
+    const client=await connect();const tools=await client.listTools();expect(tools.tools.map(t=>t.name)).toContain('submit_jobs');expect(tools.tools).toHaveLength(25)
       const hardware=await client.callTool({name:'get_system_hardware',arguments:{}});expect(hardware.isError).not.toBe(true);expect(JSON.parse((hardware.content as {text:string}[])[0].text)).toMatchObject({hardware:{version:2},accelerationValidation:'not-tested'})
     const resources=await client.listResources();expect(resources.resources[0].uri).toBe('muxivra://system/hardware');expect((await client.readResource({uri:resources.resources[0].uri})).contents).toHaveLength(1)
     const inspect=await client.callTool({name:'inspect_media',arguments:{path:input}});expect(inspect.isError).not.toBe(true)
@@ -238,7 +258,7 @@ describe('MCP HTTP 实际客户端',()=>{
     const initialized=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'muxivra-offline-script',version:'1.0'}}})})
     expect(initialized.status).toBe(200);expect((await initialized.json()).result.protocolVersion).toBe('2025-03-26')
     const notification=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})});expect(notification.status).toBe(202);expect(await notification.text()).toBe('')
-    const listed=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list'})});expect((await listed.json()).result.tools).toHaveLength(23)
+    const listed=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list'})});expect((await listed.json()).result.tools).toHaveLength(25)
     const guide=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'read_skill',arguments:{id:'workflow'}}})});const data=await guide.json();expect(data.result.isError).not.toBe(true);expect(JSON.parse(data.result.content[0].text).id).toBe('workflow')
   })
   it('拒绝未授权凭据、Host、Origin、路径和关闭的操作权限',async()=>{
@@ -289,7 +309,7 @@ describe('MCP HTTP 实际客户端',()=>{
       await new Promise(resolve=>setTimeout(resolve,100))
       const client=new Client({name:'muxivra-rollback-verification',version:'1.0'});clients.push(client)
       await client.connect(new StreamableHTTPClientTransport(new URL(service.mcpState.url!),{requestInit:{headers:{Authorization:`Bearer ${originalSettings.mcp.token}`}}}))
-      expect((await client.listTools()).tools).toHaveLength(23)
+      expect((await client.listTools()).tools).toHaveLength(25)
       const persisted=JSON.parse(await readFile(join(service.dataPath,'config.json'),'utf8'));expect(persisted.settings).toEqual(originalSettings)
     } finally {write.mockRestore();service.beforeSaveSettings=undefined}
   })

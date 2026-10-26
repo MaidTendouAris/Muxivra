@@ -1,10 +1,9 @@
 import { z } from 'zod'
 
-export const playerOwnerSchema = z.enum(['single','subtitles'])
+export const playerOwnerSchema = z.enum(['single','audio','subtitles'])
 
 const regionSchema=z.object({x:z.number().finite().min(-32768).max(32768),y:z.number().finite().min(-32768).max(32768),width:z.number().finite().min(0).max(32768),height:z.number().finite().min(0).max(32768)}).strict()
-const occlusionSchema=regionSchema.extend({radius:z.number().finite().min(0).max(1024).optional()}).strict()
-export const playerRectSchema = regionSchema.extend({scale:z.number().finite().min(.25).max(8),visible:z.boolean(),active:z.boolean(),occlusions:z.array(occlusionSchema).max(32).optional()}).strict()
+export const playerRectSchema = regionSchema.extend({scale:z.number().finite().min(.25).max(8),visible:z.boolean(),active:z.boolean()}).strict()
 
 const simple = ['play','pause','toggle','stop','frame-next','frame-previous','loop-a','loop-b','loop-clear','fullscreen'] as const
 export const playerActionSchema = z.discriminatedUnion('type',[

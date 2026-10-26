@@ -8,6 +8,20 @@ GitHub 仓库保存应用源码、锁文件、测试、构建脚本与许可证�
 
 安装包目前未签名。实际验证范围与限制见 [验收记录](VERIFICATION.md)，构建方式见 [开发文档](DEVELOPMENT.md)。
 
+## 安装与数据保留
+
+安装、升级与卸载保留现有项目、模型、运行环境、输出、设置及安装目录中的个人文件。安装器只移除记录在清单中的应用程序文件；不提供清空项目、资源或 AppData 的安装选项。
+
+若应用程序文件正在使用，卸载会停止并尝试恢复已暂存的程序文件。旧版本卸载器可能不具备此保护：对于 0.13.0 之前且安装目录内仍存在 outputs 的旧版本，安装会在开始前停止，要求先将个人文件移出安装目录。
+
+安装器验证使用专门生成的临时目录，不运行真实安装包或访问真实应用数据：
+
+```powershell
+node scripts/installer-preservation-smoke.mjs
+```
+
+离线环境可将 `MUXIVRA_NSIS_PATH` 指向本机已准备的 NSIS `Bin\makensis.exe`。验证涵盖正常升级/卸载保留用户文件、忙文件回滚及旧版输出保护。报告保存在 `artifacts/qa/installer-preservation-smoke.json`。测试不会自动清理其临时证据目录。
+
 ## 源码归档
 
 ```powershell
@@ -19,8 +33,8 @@ GitHub 仓库保存应用源码、锁文件、测试、构建脚本与许可证�
 可用 PowerShell 检查交付文件的 SHA-256：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.25.0-win-x64-setup.exe
-Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.25.0-win-x64-portable.zip
+Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.29.0-win-x64-setup.exe
+Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.29.0-win-x64-portable.zip
 ```
 
 ## GitHub Releases 与更新
@@ -30,8 +44,8 @@ Get-FileHash -Algorithm SHA256 .\release\Muxivra-0.25.0-win-x64-portable.zip
 维护者先同步 `package.json`、锁文件和 `src/shared/version.ts` 中的版本号，再提交并推送对应 `v<版本>` 标签。日常提交、PR、手动构建和标签发布共用 Windows 构建验证工作流；完整说明见 [GitHub Actions 构建与发布](RELEASING.md)。验证通过后才会上传便携 ZIP、安装 EXE 与自动更新必需的 `latest.yml`，最后发布草稿为正式最新版本。blockmap、单独源码包、校验清单不作为 Release 附件发布；校验结果保留在 Actions 验证报告中。
 
 ```powershell
-git tag v0.25.0
-git push origin v0.25.0
+git tag v0.29.0
+git push origin v0.29.0
 ```
 
 工作流使用仓库提供的 `GITHUB_TOKEN`，只在发布步骤作为 `GH_TOKEN` 提供；应用安装包和更新客户端不包含发布凭据。工作流拒绝覆盖任何已有同标签 Release。上传失败时留下草稿供维护者检查，重跑前应检查并处理草稿；已公开的版本应通过新的版本号修正。
@@ -41,6 +55,8 @@ git push origin v0.25.0
 ## 应用与第三方许可
 
 Muxivra 采用 **GPL-3.0-only**，完整文本见 [LICENSE](../LICENSE)。第三方组件保留各自许可和版权声明，见 [THIRD-PARTY-NOTICES.txt](../THIRD-PARTY-NOTICES.txt)。
+
+源码编辑窗口使用 Microsoft Monaco Editor（MIT），其编辑器脚本、Worker、图标字体均随应用本地打包。保留 Monaco 的 LICENSE 与 ThirdPartyNotices，以及依赖的各自声明；无需安装 VS Code。Monaco 作为构建依赖，发行包不重复携带整份开发源码。
 
 内置 mpv 含 FFmpeg 等播放依赖；来源、版本与校验值在 [播放器清单](../resources/mpv-manifest.json)，对应许可及源码记录在 [播放器来源说明](../resources/mpv-licenses/SOURCES.md)。Electron 所需 `ffmpeg.dll` 保留在运行时，应用媒体播放使用 mpv。转码使用外部 FFmpeg/ffprobe，安装包不捆绑这两个命令行处理引擎。
 

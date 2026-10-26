@@ -1,3 +1,4 @@
+import { downloadSourcesSchema } from '../../shared/download-sources'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { pathSchema, requestSchema } from '../../shared/schema'
@@ -13,16 +14,17 @@ const keySchema = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const reasonSchema = z.string().trim().min(1).max(2000).refine(value => !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))
 const payloads = [
   z.object({ kind: z.literal('directory'), payload: z.object({ path: pathSchema, permission: z.enum(['input', 'output']) }).strict() }),
-  z.object({ kind: z.literal('transcode'), payload: z.object({ requests: z.array(requestSchema).min(1).max(500) }).strict() })
+  z.object({ kind: z.literal('transcode'), payload: z.object({ requests: z.array(requestSchema).min(1).max(500) }).strict() }),
+  z.object({kind:z.literal('download-sources'),payload:z.object({configuration:downloadSourcesSchema,expectedRevision:z.string().regex(/^[a-f0-9]{64}$/)}).strict()})
 ] as const
 const actionFields = { requestKey: keySchema, reason: reasonSchema }
-const actionSchema = z.discriminatedUnion('kind', [payloads[0].extend(actionFields).strict(), payloads[1].extend(actionFields).strict()])
+const actionSchema = z.discriminatedUnion('kind', [payloads[0].extend(actionFields).strict(), payloads[1].extend(actionFields).strict(), payloads[2].extend(actionFields).strict()])
 const base = {
   id: z.uuid(), requestKey: keySchema, fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   status: z.enum(['pending', 'approving', 'approved', 'rejected', 'failed']), createdAt: z.iso.datetime(), resolvedAt: z.iso.datetime().optional(),
   reason: reasonSchema, reviewerNote: z.string().max(2000).optional(), error: z.string().max(4000).optional(), jobIds: z.array(z.uuid()).max(500).optional()
 }
-const recordSchema = z.discriminatedUnion('kind', [payloads[0].extend(base).strict(), payloads[1].extend(base).strict()])
+const recordSchema = z.discriminatedUnion('kind', [payloads[0].extend(base).strict(), payloads[1].extend(base).strict(), payloads[2].extend(base).strict()])
 const storeSchema = z.object({ version: z.literal(1), records: z.array(recordSchema).max(MCP_PENDING_LIMIT + MCP_HISTORY_LIMIT) }).strict()
 
 interface RequestStorage {

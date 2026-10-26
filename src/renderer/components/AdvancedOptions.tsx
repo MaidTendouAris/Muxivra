@@ -10,7 +10,7 @@ function AvControl({definition,value,onChange,label}:{definition:AvOption;value?
   const choices=definition.choices.length?definition.choices:definition.type==='boolean'?[{value:'true',label:tr("开启")},{value:'false',label:tr("关闭")},{value:'auto',label:tr("自动")}]:[]
   return <Field label={name}><div title={tr(definition.description)}>{choices.length?<Select aria-label={name} value={value??''} onChange={e=>onChange(e.target.value)}><option value="">{tr("不设置")}</option>{value&&!choices.some(c=>c.value===value)&&<option value={value}>{value}</option>}{choices.map(c=><option key={c.value} value={c.value}>{tr(c.label)}</option>)}</Select>:<Input aria-label={name} type={['int','int64','float','double'].includes(definition.type)?'number':'text'} min={definition.min} max={definition.max} step={['int','int64'].includes(definition.type)?1:'any'} value={value??''} placeholder={definition.defaultValue===undefined?tr("不设置"):tr("默认 {0}",definition.defaultValue)} onChange={e=>onChange(e.target.value)}/>}</div></Field>
 }
-function ComponentFields({kind,name,engine,values,onChange,search=''}:{kind:ComponentCapabilities['kind'];name:string;engine?:Engine;values:Record<string,string>;onChange:(key:string,value:string)=>void;search?:string}) {
+export function ComponentFields({kind,name,engine,values,onChange,search=''}:{kind:ComponentCapabilities['kind'];name:string;engine?:Engine;values:Record<string,string>;onChange:(key:string,value:string)=>void;search?:string}) {
   const [caps,setCaps]=useState<ComponentCapabilities>(),[error,setError]=useState('')
   useEffect(()=>{let active=true;setCaps(undefined);setError('');if(!engine||['copy','none'].includes(name))return;void window.muxivra.componentCapabilities(kind,name).then(c=>{if(active)setCaps(c)}).catch(e=>{if(active)setError(e.message)});return()=>{active=false}},[engine?.id,kind,name])
   if(!engine)return <p className="hint">{tr("请先配置 FFmpeg 引擎")}</p>
@@ -20,11 +20,11 @@ function ComponentFields({kind,name,engine,values,onChange,search=''}:{kind:Comp
   const visible=caps.options.filter(p=>`${p.name} ${optionLabels[p.name]??''} ${p.description}`.toLowerCase().includes(search.toLowerCase()))
   return <div className="parameter-grid">{visible.map(p=>{const key=values[p.name]!==undefined?p.name:p.aliases?.find(alias=>values[alias]!==undefined)??p.name;return <AvControl key={p.name} definition={p} value={values[key]} onChange={v=>onChange(key,v)}/>})}{!visible.length&&<p className="hint">{tr("无可用参数")}</p>}</div>
 }
-function ParameterControl({definition:p,value,onChange,engine}:{definition:ParameterDefinition;value?:ParameterValue;onChange:(value?:ParameterValue)=>void;engine?:Engine}) {
+export function ParameterControl({definition:p,value,onChange,engine}:{definition:ParameterDefinition;value?:ParameterValue;onChange:(value?:ParameterValue)=>void;engine?:Engine}) {
   const choices=p.choices??(p.key==='decoder'?engine?.decoders:undefined)
   return <Field label={tr(p.label)} hint={tr(p.hint)}><div title={p.flag?`FFmpeg -${p.flag}`:undefined}>{choices?<Select aria-label={tr(p.label)} value={String(value??'')} onChange={e=>onChange(e.target.value||undefined)}><option value="">{tr("自动 / 不设置")}</option>{choices.map(v=><option key={v} value={v}>{({accurate:tr("精确定位"),fast:tr("快速定位"),on:tr("开启"),off:tr("关闭"),fit:tr("保持比例"),stretch:tr("拉伸"),keep:tr("保留"),remove:tr("移除"),none:tr("不保留"),copy:tr("复制"),metadata:tr("仅写元数据"),convert:tr("转换像素并写元数据"),forever:tr("无限循环"),once:tr("单次"),auto:tr("自动"),bitrate:tr("目标码率"),manual:tr("专用参数控制")} as Record<string,string>)[v]??v}</option>)}</Select>:<Input aria-label={tr(p.label)} type={p.type==='number'?'number':'text'} value={value===undefined?'':String(value)} min={p.min} max={p.max} step={p.integer?1:'any'} placeholder={tr("不设置")} onChange={e=>onChange(e.target.value===''?undefined:p.type==='number'?Number(e.target.value):e.target.value)}/>}</div></Field>
 }
-function FilterEditor({kind,draft,onChange,engine,search}:{kind:'video'|'audio';draft:TranscodeOptions;onChange:(value:TranscodeOptions)=>void;engine?:Engine;search:string}) {
+export function FilterEditor({kind,draft,onChange,engine,search}:{kind:'video'|'audio';draft:TranscodeOptions;onChange:(value:TranscodeOptions)=>void;engine?:Engine;search:string}) {
   const filters=draft.filters??[],shown=filters.filter(f=>filterLibrary.find(d=>d.name===f.name)?.kind===kind)
   const [add,setAdd]=useState('')
   const update=(id:string,patch:Partial<FilterSetting>)=>onChange({...draft,filters:filters.map(f=>f.id===id?{...f,...patch}:f)})

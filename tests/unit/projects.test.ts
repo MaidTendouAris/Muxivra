@@ -9,6 +9,12 @@ const roots:string[]=[],stores:ProjectManager[]=[]
 async function setup(onUpdate?:(manager:ProjectManager,source:string)=>void){await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data','managed-project-'));roots.push(root);const source=join(root,'clip.mp4'),paths=new PathPolicy();await writeFile(source,Buffer.alloc(64*1024,7));await paths.grantFile(source);let manager:ProjectManager;manager=new ProjectManager(join(root,'install','projects'),join(root,'profile'),paths,()=>onUpdate?.(manager,source));stores.push(manager);await manager.initialize();return {root,source,manager,paths}}
 afterEach(async()=>{for(const store of stores.splice(0))await store.shutdown();for(const root of roots.splice(0)){if(!isWithin(resolve('.test-data'),root))throw new Error('Unsafe cleanup');await rm(root,{recursive:true,force:true})}})
 describe('managed media projects',()=>{
+  it('never publishes or deletes the source when required preprocessing fails',async()=>{
+    const {source,manager}=await setup(),bytes=await readFile(source),original=await manager.importMedia(source)
+    manager.prepareMedia=async(_path,directory,_signal,progress)=>{progress('建立视频帧索引',20);await writeFile(join(directory,'partial-index.bin'),'not complete');throw new Error('frame index disk failure')}
+    await expect(manager.importMedia(source,true)).rejects.toThrow('frame index disk failure')
+    expect(await readFile(source)).toEqual(bytes);expect(manager.state().activeId).toBe(original.project.id);expect(manager.state().items).toHaveLength(1);expect(await readdir(manager.root)).toEqual([original.project.folder])
+  },60000)
   it('ignores legacy empty sessions and stale edits after deleting or closing a project',async()=>{
     const {source,root,manager}=await setup(),legacy=join(root,'profile','empty-subtitle-workspace');await mkdir(legacy,{recursive:true});await writeFile(join(legacy,'subtitle-session.json'),JSON.stringify(createSubtitleDocument()))
     const a=await manager.importMedia(source),edited={...a.document,cues:[{id:'cue',startMs:0,endMs:1000,text:'Saved before deletion'}]}

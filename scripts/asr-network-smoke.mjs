@@ -17,7 +17,7 @@ await new Promise(done=>proxy.listen(0,'127.0.0.1',done));const port=proxy.addre
 const report={executable:process.env.MUXIVRA_EXECUTABLE||'development',errors:[],requests},desktop=await electron.launch({executablePath:process.env.MUXIVRA_EXECUTABLE||electronPath,args:process.env.MUXIVRA_EXECUTABLE?[]:['.'],cwd:process.cwd(),env:{...process.env,MUXIVRA_SMOKE:'1',MUXIVRA_DATA_PATH:profile,MUXIVRA_ENGINE_PATH:join(root,'engines')},timeout:60000});let page
 async function until(predicate,timeout=60000){const end=Date.now()+timeout;while(Date.now()<end){const value=await page.evaluate(()=>window.muxivra.snapshot());if(predicate(value))return value;await new Promise(done=>setTimeout(done,100))}throw new Error('State wait timed out')}
 try{
-  page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   await desktop.evaluate(async({session},port)=>{const downloads=session.fromPartition('muxivra-downloads');await downloads.setProxy({mode:'fixed_servers',proxyRules:`http=127.0.0.1:${port};https=127.0.0.1:${port}`});await downloads.closeAllConnections()},port)
   // A new device without Node proxy setup cannot resolve this hostname. The
   // native download session must route it through the configured system stack.
@@ -30,15 +30,15 @@ try{
   },{bundle,root:join(root,'cold-fixture'),size:payload.length,sha256:createHash('sha256').update(payload).digest('hex')})
   assert.deepEqual(await readFile(native.target),payload);assert.equal(native.network.env.HTTPS_PROXY,`http://127.0.0.1:${port}`);report.systemProxyDownload=true
 
-  await page.locator('.navigation').getByRole('button',{name:'ASR 工作台',exact:true}).click();await page.getByRole('button',{name:'下载与管理',exact:true}).click();await until(s=>!!s.asr.nvidia?.devices.length)
+  await page.locator('.navigation').getByRole('button',{name:'资源管理',exact:true}).click();await page.getByRole('navigation',{name:'资源分类',exact:true}).getByRole('button',{name:'环境',exact:true}).click();await until(s=>!!s.asr.nvidia?.devices.length)
   await desktop.evaluate(({clipboard})=>{globalThis.__networkCopies=[];clipboard.writeText=text=>globalThis.__networkCopies.push(text)})
   await page.getByRole('button',{name:'检查下载网络',exact:true}).click();await page.getByRole('button',{name:'复制诊断',exact:true}).waitFor({timeout:45000});await page.getByRole('button',{name:'复制诊断',exact:true}).click()
   const diagnostics=JSON.parse(await desktop.evaluate(()=>globalThis.__networkCopies.at(-1)));assert.equal(diagnostics.checks.length,8);assert.ok(diagnostics.checks.every(check=>!check.ok&&check.message.includes('https://')));assert.ok(diagnostics.checks.every(check=>check.route?.hops[0]?.proxy));report.diagnostics=diagnostics
-  const card=page.locator('.asr-asset-grid > .card.asr-asset-card').filter({has:page.getByText('Qwen3-ASR-0.6B',{exact:true})})
-  await card.getByRole('button',{name:'一键安装部署',exact:true}).click();const failed=await until(s=>s.asr.deployment?.phase==='failed',60000)
-  assert.match(failed.asr.deployment.message,/github\.com\/astral-sh\/uv/);assert.match(failed.asr.deployment.message,/代理|连接/);assert.equal(failed.asr.environments.length,0);assert.equal(failed.asr.models.length,0)
-  await page.getByRole('button',{name:'复制完整部署日志',exact:true}).click();report.failureLog=await desktop.evaluate(()=>globalThis.__networkCopies.at(-1));assert.ok(report.failureLog.includes('deployment-error'));assert.ok(report.failureLog.includes('"phase":"runtime"'));assert.ok(report.failureLog.includes('github.com/astral-sh/uv'))
-  await page.screenshot({path:'artifacts/qa/asr-network-diagnostics.png',fullPage:true});report.coldFailureExplained=true
+  const python=page.locator('.resource-download-files > .inner-card').filter({has:page.getByText('Python 基础运行时',{exact:true})})
+  await python.getByRole('button',{name:'下载文件',exact:true}).click();const failed=await until(s=>s.asr.deployment?.phase==='failed',60000)
+  assert.match(failed.asr.deployment.message,/github\.com\/astral-sh\/uv/);assert.match(failed.asr.deployment.message,/代理|连接/);assert.equal(failed.asr.environments.length,0);assert.equal(failed.asr.models.length,0);assert.equal(failed.asr.resources.length,0)
+  await page.getByRole('button',{name:'复制完整部署日志',exact:true}).click();report.failureLog=await desktop.evaluate(()=>globalThis.__networkCopies.at(-1));assert.ok(report.failureLog.includes('resource-error'));assert.match(report.failureLog,/GitHub|github\.com/);assert.match(report.failureLog,/PyPI|pythonhosted\.org/);assert.ok(report.failureLog.includes('github.com/astral-sh/uv'))
+  await page.screenshot({path:'artifacts/qa/asr-network-diagnostics.png',fullPage:true});report.coldFailureExplained=true;report.pythonResourceDownloadSeparated=true
 
   // Remove only this isolated session's test override. Real cold download uses
   // the machine's system proxy and normal TLS validation, not fixture data.

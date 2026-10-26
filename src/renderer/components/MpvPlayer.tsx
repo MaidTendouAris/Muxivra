@@ -20,6 +20,7 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
   const volumeControl=useRef<{value?:number;pending?:number;sending:boolean;editing:boolean}>({sending:false,editing:false})
   const surfaceControl=useRef<{pending?:PlayerRect;sending:boolean}>({sending:false})
   const viewport=useRef<HTMLDivElement>(null),callbacks=useRef({onState,onMediaChange});callbacks.current={onState,onMediaChange}
+  const requestedMedia=useRef(''),opening=useRef<Promise<void>|undefined>(undefined)
   const hasVideo=state.tracks.some(track=>track.type==='video'&&!track.external)
   const usable=state.ready&&!!state.path&&!state.loading&&!state.error
   function synchronizeSurface(rect:PlayerRect){
@@ -56,81 +57,62 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
     void window.muxivra.playerState(owner).then(next=>{if(live)setState(next)})
     return()=>{live=false;off()}
   },[owner])
-  useEffect(()=>{if(path){setError('');void window.muxivra.playerOpen(owner,[path]).catch(error=>setError(error.message))}},[owner,path,loadId])
+  useEffect(()=>{
+    if(!active||!path)return
+    let live=true
+    const key=JSON.stringify([owner,path,loadId])
+    const open=()=>{setError('');requestedMedia.current=key;const pending=window.muxivra.playerOpen(owner,[path]);opening.current=pending;void pending.catch(error=>{if(live)setError(error.message)}).finally(()=>{if(opening.current===pending)opening.current=undefined})}
+    if(requestedMedia.current!==key)open()
+    else void(async()=>{
+      await opening.current?.catch(()=>{})
+      const current=await window.muxivra.playerState(owner)
+      // Close/reopen can happen inside one coalesced project snapshot. Recover
+      // the released backend on activation even if React retained the same path.
+      // An existing loaded session keeps its playback position across subpages.
+      if(live&&!current.path&&!current.loading&&!current.error)open()
+    })().catch(error=>{if(live)setError(error.message)})
+    return()=>{live=false}
+  },[owner,path,loadId,active])
   const mediaKey=JSON.stringify([state.path,state.durationMs,state.tracks])
   useEffect(()=>{let live=true;if(state.path&&!state.loading)void window.muxivra.playerMedia(owner).then(info=>{if(live&&info)callbacks.current.onMediaChange?.(info)}).catch(error=>setError(error.message));return()=>{live=false}},[mediaKey,state.loading,owner])
   useEffect(()=>{
-    let frame=0,last='',scrolling=false,settle:ReturnType<typeof setTimeout>|undefined
+    let frame=0,last=''
     const update=()=>{
       const element=viewport.current;if(!element)return
       if(owner==='subtitles'&&!state.fullscreen){
-        const card=element.closest('.subtitle-preview-card'),player=element.closest('.mpv-player'),controls=player?.querySelector('.player-controls'),heading=card?.querySelector('.card-heading'),waveform=card?.querySelector('.audio-timeline')
-        if(card&&controls&&player){
+        const card=element.closest('.subtitle-preview-card'),player=element.closest('.mpv-player'),controls=player?.querySelector('.player-controls'),heading=card?.querySelector('.card-heading')
+        if(card&&controls){
           const style=getComputedStyle(card)
-          // Floating settings never contribute to the preview layout.
-          const controlHeight=controls.getBoundingClientRect().height
-          const occupied=(parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0)+(heading?heading.getBoundingClientRect().height+(parseFloat(getComputedStyle(heading).marginBottom)||0):0)+controlHeight+(waveform?waveform.getBoundingClientRect().height+(parseFloat(getComputedStyle(waveform).marginTop)||0):0)+2
+          const occupied=(parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0)+(heading?heading.getBoundingClientRect().height+(parseFloat(getComputedStyle(heading).marginBottom)||0):0)+controls.getBoundingClientRect().height+2
           const value=`${Math.max(80,Math.floor(card.clientHeight-occupied))}px`
           if(element.style.getPropertyValue('--preview-video-height')!==value)element.style.setProperty('--preview-video-height',value)
         }
       }
-      const bounds=element.getBoundingClientRect()
-      const shown=active&&document.visibilityState==='visible'
-      let left=Math.max(0,bounds.left),top=Math.max(0,bounds.top),right=Math.min(window.innerWidth,bounds.right),bottom=Math.min(window.innerHeight,bounds.bottom)
-      // A native HWND does not inherit CSS overflow clipping. Include every
-      // scrolling/clipping ancestor, as subtitle panes can scroll separately.
-      // Fullscreen is fixed to the window; the ordinary preview card is no
-      // longer its clipping ancestor. Window/overlay clipping still applies.
-      for(let parent=state.fullscreen?null:viewport.current?.parentElement;parent;parent=parent.parentElement){
-        const style=getComputedStyle(parent),box=parent.getBoundingClientRect()
-        if(/^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowX)){left=Math.max(left,box.left+parent.clientLeft);right=Math.min(right,box.left+parent.clientLeft+parent.clientWidth)}
-        if(/^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowY)){top=Math.max(top,box.top+parent.clientTop);bottom=Math.min(bottom,box.top+parent.clientTop+parent.clientHeight)}
-      }
-      const clipping=[
-        {x:0,y:0,width:Math.max(0,left-bounds.left),height:bounds.height},
-        {x:Math.max(0,right-bounds.left),y:0,width:Math.max(0,bounds.right-right),height:bounds.height},
-        {x:0,y:0,width:bounds.width,height:Math.max(0,top-bounds.top)},
-        {x:0,y:Math.max(0,bottom-bounds.top),width:bounds.width,height:Math.max(0,bounds.bottom-bottom)}
-      ].filter(cut=>cut.width>0&&cut.height>0)
-      // Keep the full overlay bounds and corner radius: clipping them to the
-      // viewport first would move rounded corners when a popup crosses its edge.
-      const exitOpen=!!document.querySelector('.exit-dialog')
-      const occlusions=[...clipping,...Array.from(document.querySelectorAll(`[role="dialog"],[role="listbox"],.player-settings-popover,.toast,.player-loading,.operation-status${state.fullscreen?'':',.subtitle-project-card'}`)).slice(0,32-clipping.length).flatMap(element=>{const overlay=element.getBoundingClientRect(),style=getComputedStyle(element),radius=Math.min(...[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius].map(value=>parseFloat(value)||0),overlay.width/2,overlay.height/2);return overlay.right>bounds.left&&overlay.left<bounds.right&&overlay.bottom>bounds.top&&overlay.top<bounds.bottom?[{x:overlay.x-bounds.x,y:overlay.y-bounds.y,width:overlay.width,height:overlay.height,radius}]:[]})]
-      const rect={x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,scale:window.devicePixelRatio,visible:shown&&hasVideo&&!exitOpen&&right>left&&bottom>top,active,occlusions}
-      const key=JSON.stringify(rect);if(key===last)return;last=key
-      synchronizeSurface(rect)
+      // Layout, clipping, scrolling, dialogs and translucency are now handled by
+      // Chromium. Only backing texture dimensions/visibility cross the bridge.
+      const rect={x:0,y:0,width:element.clientWidth,height:element.clientHeight,scale:window.devicePixelRatio,visible:active&&document.visibilityState==='visible'&&hasVideo,active}
+      const key=JSON.stringify(rect);if(key===last)return;last=key;synchronizeSurface(rect)
     }
-    const schedule=()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;update();if(scrolling)schedule()})}
-    const beginScroll=()=>{
-      // Keep rendering while geometry moves. Update clipping immediately on
-      // scroll events and track compositor frames through the settling period.
-      scrolling=true;update();schedule();if(settle)clearTimeout(settle)
-      settle=setTimeout(()=>{settle=undefined;scrolling=false;schedule()},120)
-    }
-    const scroll=(event:Event)=>{if(!state.fullscreen&&(event.target===document||event.target===window||(event.target instanceof Element&&event.target.contains(viewport.current))))beginScroll()}
-    const wheel=(event:WheelEvent)=>{
-      if(state.fullscreen||event.ctrlKey||(!event.deltaX&&!event.deltaY)||!(event.target instanceof Element))return
-      if(event.target.closest('[role="listbox"],[role="dialog"],.player-settings-popover,.select-scroll-track'))return
-      // Ignore dropdown/table scrolling that does not move the preview.
-      for(let element:Element|null=event.target;element;element=element.parentElement){
-        const style=getComputedStyle(element)
-        const movesY=event.deltaY&&/^(auto|scroll|overlay)$/.test(style.overflowY)&&element.scrollHeight>element.clientHeight&&(event.deltaY>0?element.scrollTop+element.clientHeight<element.scrollHeight:element.scrollTop>0)
-        const movesX=event.deltaX&&/^(auto|scroll|overlay)$/.test(style.overflowX)&&element.scrollWidth>element.clientWidth&&(event.deltaX>0?element.scrollLeft+element.clientWidth<element.scrollWidth:element.scrollLeft>0)
-        if(movesY||movesX){if(element.contains(viewport.current))beginScroll();return}
-      }
-      const element=document.scrollingElement;if(element&&((event.deltaY>0&&element.scrollTop+element.clientHeight<element.scrollHeight)||(event.deltaY<0&&element.scrollTop>0)||(event.deltaX>0&&element.scrollLeft+element.clientWidth<element.scrollWidth)||(event.deltaX<0&&element.scrollLeft>0)))beginScroll()
-    }
-    const resize=new ResizeObserver(schedule);const element=viewport.current;if(element)resize.observe(element)
-    const card=element?.closest('.subtitle-preview-card');if(card){resize.observe(card);for(const child of card.querySelectorAll('.card-heading,.player-controls,.audio-timeline'))resize.observe(child)}
-    const mutation=new MutationObserver(schedule);mutation.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden','style']})
-    window.addEventListener('resize',schedule);window.addEventListener('scroll',scroll,true);window.addEventListener('wheel',wheel,{capture:true,passive:true});document.addEventListener('visibilitychange',schedule);schedule()
-    return()=>{resize.disconnect();mutation.disconnect();cancelAnimationFrame(frame);if(settle)clearTimeout(settle);window.removeEventListener('resize',schedule);window.removeEventListener('scroll',scroll,true);window.removeEventListener('wheel',wheel,true);document.removeEventListener('visibilitychange',schedule)}
+    const schedule=()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;update()})}
+    const resize=new ResizeObserver(schedule),element=viewport.current;if(element)resize.observe(element)
+    const card=element?.closest('.subtitle-preview-card');if(card){resize.observe(card);for(const child of card.querySelectorAll('.card-heading,.player-controls'))resize.observe(child)}
+    window.addEventListener('resize',schedule);document.addEventListener('visibilitychange',schedule);schedule()
+    return()=>{resize.disconnect();cancelAnimationFrame(frame);window.removeEventListener('resize',schedule);document.removeEventListener('visibilitychange',schedule)}
   },[active,hasVideo,state.ready,state.error,state.fullscreen,owner])
-  useEffect(()=>()=>{synchronizeSurface({x:0,y:0,width:0,height:0,scale:1,visible:false,active:false})},[owner])
+  useEffect(()=>{
+    const element=viewport.current
+    return()=>{
+      // Release a detached canvas's retained GPU image immediately; waiting for
+      // garbage collection could exhaust the bounded texture pool on page hops.
+      const canvas=element?.querySelector('canvas');if(canvas){canvas.width=2;canvas.height=2}
+      synchronizeSurface({x:0,y:0,width:0,height:0,scale:1,visible:false,active:false})
+    }
+  },[owner])
   useEffect(()=>{
     if(!active||!usable)return
     const listener=(event:KeyboardEvent)=>{
       if(event.defaultPrevented||isShortcutInput(event.target)||document.querySelector('[role="dialog"], [role="listbox"]'))return
+      if(owner==='subtitles'&&(event.target as Element)?.closest('.waveform-selection-handle')&&['ArrowLeft','ArrowRight','Home','End'].includes(event.code))return
       if(event.code==='Escape'&&document.querySelector('.player-settings-popover'))return
       // Range controls already implement their own directional adjustments.
       if((event.target as Element)?.closest('input[type="range"]')&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown'].includes(event.code))return
@@ -149,7 +131,8 @@ export function MpvPlayer({owner,path,active,run,onState,onMediaChange,loadId=0}
   const tracks=(kind:'audio'|'sub')=>state.tracks.filter(track=>track.type===kind)
   const trackLabel=(track:PlayerState['tracks'][0])=>`${track.id} · ${track.title||track.lang||track.codec||tr("未命名")}${track.external?tr(" · 外部"):''}`
   return <div className={`mpv-player ${state.fullscreen?'player-fullscreen':''}`} data-player-owner={owner} tabIndex={0}>
-    <div ref={viewport} className={`mpv-viewport ${hasVideo?'':'audio-viewport'}`} style={{'--video-aspect':state.videoAspect??(state.videoWidth&&state.videoHeight?state.videoWidth/state.videoHeight:16/9)} as CSSProperties}>
+    <div ref={viewport} onClick={event=>{if(hasVideo&&event.detail===1)void act({type:'toggle'})}} onDoubleClick={()=>{if(hasVideo)void act({type:'fullscreen'})}} className={`mpv-viewport ${hasVideo?'':'audio-viewport'}`} style={{'--video-aspect':state.videoAspect??(state.videoWidth&&state.videoHeight?state.videoWidth/state.videoHeight:16/9)} as CSSProperties}>
+      <canvas data-mpv-surface={owner} className="mpv-canvas" aria-label={tr("视频预览")} hidden={!hasVideo}/>
       {!hasVideo&&<div className="audio-summary"><Music2 size={28}/><div><strong>{state.title||nameOf(path)}</strong><span>{tracks('audio').map(track=>[track.codec,track['demux-channel-count']?tr("{0} 声道",track['demux-channel-count']):undefined,track['demux-samplerate']?`${track['demux-samplerate']} Hz`:undefined].filter(Boolean).join(' · ')).join(' / ')}</span></div></div>}
       {state.loading&&<span className="player-loading" role="status"><Busy text={tr("正在载入…")}/></span>}
     </div>

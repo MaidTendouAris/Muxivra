@@ -15,7 +15,7 @@ const launch=async(path=profile,system='zh-CN')=>{desktop=await electron.launch(
 const select=async(label,option)=>{await page.getByLabel(label,{exact:true}).click();await page.getByRole('option',{name:option,exact:true}).click();await until(async()=>await page.getByLabel(label,{exact:true}).innerText()===option)}
 const until=async(check)=>{const end=Date.now()+30000;while(Date.now()<end){if(await check())return;await page.waitForTimeout(50)}throw new Error('Subtitle files state timed out')}
 try{
- await launch();await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000});const project=await createProject(page,desktop,video,{subtitle})
+ await launch();await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000});const project=await createProject(page,desktop,video,{subtitle})
  assert.equal(project.subtitles.length,1);assert.equal(await page.getByRole('button',{name:'删除字幕文件',exact:true}).isEnabled(),false)
  await until(()=>page.evaluate(async()=>{const s=await window.muxivra.playerState('subtitles');return s.ready&&!s.loading&&s.videoWidth>0}))
  await page.evaluate(()=>window.muxivra.playerAction('subtitles',{type:'seek',positionMs:3500}));await page.waitForTimeout(400)

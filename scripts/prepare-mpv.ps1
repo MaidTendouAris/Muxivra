@@ -9,26 +9,40 @@ function Get-Sha256([string]$Path) {
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $manifest = Get-Content -LiteralPath (Join-Path $projectRoot 'resources\mpv-manifest.json') -Raw | ConvertFrom-Json
 $playerDirectory = Join-Path $projectRoot 'resources\mpv'
-$playerExecutable = Join-Path $playerDirectory 'mpv.exe'
-if (Test-Path -LiteralPath $playerExecutable) {
-    if ((Get-Sha256 $playerExecutable) -eq $manifest.executableSha256) {
-        Write-Output "mpv $($manifest.version): SHA-256 verified"
-        exit 0
-    }
-    throw 'resources/mpv/mpv.exe 校验失败；请移除不匹配的文件后重新准备，不使用未知二进制'
-}
-if ($VerifyOnly) { throw '缺少内置 mpv；先运行 npm run prepare:mpv' }
+$extractor = Join-Path $projectRoot 'node_modules\electron-winstaller\vendor\7z.exe'
 $cacheDirectory = Join-Path $projectRoot '.runtime'
 New-Item -ItemType Directory -Path $cacheDirectory -Force | Out-Null
-$archivePath = Join-Path $cacheDirectory "mpv-$($manifest.release).7z"
-if (-not (Test-Path -LiteralPath $archivePath)) {
-    Invoke-WebRequest -Uri $manifest.url -OutFile $archivePath -UseBasicParsing
-}
-if ((Get-Sha256 $archivePath) -ne $manifest.archiveSha256) { throw 'mpv 下载包 SHA-256 校验失败' }
-$extractor = Join-Path $projectRoot 'node_modules\electron-winstaller\vendor\7z.exe'
-if (-not (Test-Path -LiteralPath $extractor)) { throw '请先安装锁定的 npm 依赖，以获取构建用 7-Zip' }
 New-Item -ItemType Directory -Path $playerDirectory -Force | Out-Null
-& $extractor e $archivePath "-o$playerDirectory" 'mpv.exe' -y | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'mpv 解压失败' }
-if ((Get-Sha256 $playerExecutable) -ne $manifest.executableSha256) { throw 'mpv 可执行文件 SHA-256 校验失败' }
-Write-Output "mpv $($manifest.version): prepared and SHA-256 verified"
+# The CLI is prepared for headless integration tests only. The application and
+# distributable use libmpv, never a separate native-window mpv process.
+$artifacts = @(
+    @{ Name = 'libmpv-2.dll'; Url = $manifest.libraryUrl; ArchiveHash = $manifest.libraryArchiveSha256; Hash = $manifest.librarySha256; Cache = "libmpv-$($manifest.release).7z" },
+    @{ Name = 'mpv.exe'; Url = $manifest.url; ArchiveHash = $manifest.archiveSha256; Hash = $manifest.executableSha256; Cache = "mpv-$($manifest.release).7z" }
+)
+foreach ($artifact in $artifacts) {
+    $target = Join-Path $playerDirectory $artifact.Name
+    if ((Test-Path -LiteralPath $target) -and ((Get-Sha256 $target) -eq $artifact.Hash)) {
+        Write-Output "$($artifact.Name) $($manifest.version): SHA-256 verified"
+        continue
+    }
+    if ($VerifyOnly) { throw "$($artifact.Name) missing or checksum mismatch; run npm run prepare:mpv" }
+    if (-not (Test-Path -LiteralPath $extractor)) { throw 'Install locked npm dependencies to obtain the build-time 7-Zip extractor.' }
+    $archivePath = Join-Path $cacheDirectory $artifact.Cache
+    if (-not (Test-Path -LiteralPath $archivePath)) { Invoke-WebRequest -Uri $artifact.Url -OutFile $archivePath -UseBasicParsing }
+    if ((Get-Sha256 $archivePath) -ne $artifact.ArchiveHash) { throw "$($artifact.Name) archive SHA-256 mismatch" }
+    $staging = Join-Path $cacheDirectory ("mpv-stage-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    try {
+        & $extractor e $archivePath "-o$staging" $artifact.Name -y | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'mpv extraction failed' }
+        $verified = Join-Path $staging $artifact.Name
+        if ((Get-Sha256 $verified) -ne $artifact.Hash) { throw "$($artifact.Name) SHA-256 mismatch" }
+        Copy-Item -LiteralPath $verified -Destination $target -Force
+    } finally {
+        # This path is freshly created under the verified workspace cache.
+        $resolvedStaging = [IO.Path]::GetFullPath($staging)
+        if (-not $resolvedStaging.StartsWith([IO.Path]::GetFullPath($cacheDirectory) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected staging path' }
+        Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+    }
+    Write-Output "$($artifact.Name) $($manifest.version): prepared and SHA-256 verified"
+}

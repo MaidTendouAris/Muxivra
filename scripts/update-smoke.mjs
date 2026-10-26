@@ -42,7 +42,7 @@ try {
   page = await desktop.firstWindow()
   page.on('pageerror', error => report.errors.push(error.message))
   report.appVersion = await desktop.evaluate(({ app }) => app.getVersion())
-  await page.getByRole('heading', { name: '单文件', exact: true }).waitFor({ timeout: 60000 })
+  await page.getByRole('heading', { name: '视频处理', exact: true }).waitFor({ timeout: 60000 })
   await phase('available')
   const expectedVersion = (await state()).version
   assert.ok(expectedVersion && expectedVersion !== report.appVersion)
@@ -56,7 +56,7 @@ try {
   await card.waitFor()
   assert.ok((await card.innerText()).includes(report.appVersion))
   assert.equal((await fixture()).checks, 1, 'Opening settings must not start another automatic check')
-  await page.locator('.navigation').getByRole('button', { name: '单文件', exact: true }).click()
+  await page.locator('.navigation').getByRole('button', { name: '视频处理', exact: true }).click()
   await page.locator('.navigation').getByRole('button', { name: '设置', exact: true }).click()
   assert.equal((await fixture()).checks, 1)
   report.startupCheckOnceAndGlobalNotice = true

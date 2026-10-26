@@ -23,11 +23,11 @@ const call=async(name,args={})=>{const value=await client.callTool({name,argumen
 async function connect(snapshot){client=new Client({name:'muxivra-interaction-smoke',version:'1.0'});await client.connect(new StreamableHTTPClientTransport(new URL(snapshot.mcp.url),{requestInit:{headers:{Authorization:`Bearer ${snapshot.settings.mcp.token}`}}}))}
 async function poll(page,fn,check){for(let i=0;i<300;i++){const value=await page.evaluate(fn);if(check(value))return value;await page.waitForTimeout(50)}throw new Error('State timeout')}
 try{
-  let page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  let page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   const base=await page.evaluate(()=>window.muxivra.snapshot())
   await page.evaluate(settings=>window.muxivra.saveSettings(settings),{...base.settings,theme:'light',mcp:{...base.settings.mcp,enabled:true,port,allowSubmit:false,inputRoots:[]}})
   let snapshot=await page.evaluate(()=>window.muxivra.snapshot());await connect(snapshot)
-  assert.ok(client.getInstructions().includes('request_directory_access'));assert.equal((await client.listTools()).tools.length,23);assert.ok(!(await client.listTools()).tools.some(tool=>/approv|review/.test(tool.name)))
+  assert.ok(client.getInstructions().includes('request_directory_access'));assert.equal((await client.listTools()).tools.length,25);assert.ok(!(await client.listTools()).tools.some(tool=>/approv|review/.test(tool.name)))
   assert.equal((await client.callTool({name:'list_media_files',arguments:{directory:media}})).isError,true)
   const args={path:media,permission:'input',reason:'读取用户选择的测试音乐与视频',requestKey:'directory-once'},directory=await call('request_directory_access',args)
   assert.equal(directory.status,'pending');assert.deepEqual((await page.evaluate(()=>window.muxivra.snapshot())).settings.mcp.inputRoots,[])
@@ -62,8 +62,9 @@ try{
   const toggle=page.locator('[data-shortcut="player.toggle"]');await toggle.getByRole('button',{name:'播放 / 暂停快捷键',exact:true}).click();await page.keyboard.press('Control+p');assert.ok(await toggle.evaluate(e=>e.classList.contains('setting-changed')))
   const mute=page.locator('[data-shortcut="player.mute"]');await mute.getByRole('button',{name:'静音 / 取消静音快捷键',exact:true}).click();await page.keyboard.press('Control+p');await page.getByText('请先解决快捷键冲突，再保存设置。播放器快捷键也用于字幕页。',{exact:true}).waitFor()
   await mute.getByRole('button',{name:'重置静音 / 取消静音快捷键',exact:true}).click();await page.screenshot({path:'artifacts/qa/shortcuts-dark.png',fullPage:true})
-  await page.locator('.navigation').getByRole('button',{name:'单文件',exact:true}).click();const leave=page.getByRole('dialog',{name:'应用设置更改？',exact:true});await leave.waitFor();await leave.getByRole('button',{name:'应用并离开',exact:true}).click();await page.getByRole('button',{name:'选择媒体文件',exact:true}).waitFor()
-  snapshot=await page.evaluate(()=>window.muxivra.snapshot());assert.equal(snapshot.settings.shortcuts['player.toggle'],'Ctrl+KeyP')
+  const volumeBinding=page.locator('[data-shortcut="player.volumeDown"]').getByRole('button',{name:'降低音量快捷键',exact:true});await volumeBinding.click();assert.equal(await volumeBinding.getAttribute('aria-pressed'),'true');await volumeBinding.click({button:'right'});assert.equal(await volumeBinding.getAttribute('aria-pressed'),'false');await page.keyboard.press('j');assert.equal(await volumeBinding.getAttribute('aria-pressed'),'false');report.rightClickClearsBindingAndStopsRecording=true
+  await page.locator('.navigation').getByRole('button',{name:'视频处理',exact:true}).click();const leave=page.getByRole('dialog',{name:'应用设置更改？',exact:true});await leave.waitFor();await leave.getByRole('button',{name:'应用并离开',exact:true}).click();await page.getByRole('button',{name:'选择媒体文件',exact:true}).waitFor()
+  snapshot=await page.evaluate(()=>window.muxivra.snapshot());assert.equal(snapshot.settings.shortcuts['player.toggle'],'Ctrl+KeyP');assert.equal(snapshot.settings.shortcuts['player.volumeDown'],'')
   await desktop.evaluate(({dialog},video)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[video]})},video)
   await page.getByRole('button',{name:'选择媒体文件',exact:true}).click();await poll(page,()=>window.muxivra.playerState('single'),state=>state.ready&&state.path&&!state.loading)
   await desktop.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows()[0];window.setAlwaysOnTop(true);window.show();window.focus()})
@@ -75,8 +76,8 @@ try{
   await page.keyboard.press('Space');await page.waitForTimeout(150);assert.equal((await page.evaluate(()=>window.muxivra.playerState('single'))).paused,false);report.customShortcutWorksInRendererAndNativeVideo=true
   await desktop.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows()[0];window.setAlwaysOnTop(false);window.setBounds({width:1040,height:720})})
   await page.locator('.navigation').getByRole('button',{name:/^MCP 交互/}).click();await page.waitForTimeout(100);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth));await page.screenshot({path:'artifacts/qa/mcp-interaction-minimum.png',fullPage:true});report.minimumWindowNoOverflow=true
-  await client.close();client=undefined;await desktop.close();desktop=await launch();page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
-  snapshot=await page.evaluate(()=>window.muxivra.snapshot());assert.equal(snapshot.settings.shortcuts['player.toggle'],'Ctrl+KeyP');await connect(snapshot)
+  await client.close();client=undefined;await desktop.close();desktop=await launch();page=await desktop.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
+  snapshot=await page.evaluate(()=>window.muxivra.snapshot());assert.equal(snapshot.settings.shortcuts['player.toggle'],'Ctrl+KeyP');assert.equal(snapshot.settings.shortcuts['player.volumeDown'],'');await connect(snapshot)
   assert.equal((await call('request_transcode',taskArgs)).id,application.id);assert.equal((await call('get_request',{id:application.id})).status,'approved');assert.equal(snapshot.jobs.length,1)
   const data=JSON.parse(await readFile(join(profile,'mcp-requests.json'),'utf8'));assert.equal(data.records.length,3);assert.equal(data.records.find(r=>r.id===directory.id).reviewerNote,'仅授权此测试输入目录')
   report.requestsAndShortcutsSurviveRestart=true;report.appVersion=await desktop.evaluate(({app})=>app.getVersion());assert.deepEqual(errors,[])

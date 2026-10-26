@@ -16,7 +16,7 @@ const report={executable:process.env.MUXIVRA_EXECUTABLE||'development build',err
 try {
   const page=await desktop.firstWindow();page.on('pageerror',error=>report.errors.push(error.message))
   report.appVersion=await desktop.evaluate(({app})=>app.getVersion())
-  await page.getByRole('heading',{name:'单文件',exact:true}).waitFor({timeout:60000})
+  await page.getByRole('heading',{name:'视频处理',exact:true}).waitFor({timeout:60000})
   await page.locator('.navigation').getByRole('button',{name:'字幕编辑',exact:true}).click()
   await desktop.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]})},video)
   await createProject(page,desktop,video)

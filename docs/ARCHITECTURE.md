@@ -5,7 +5,7 @@
 - `src/shared/`：数据类型、Zod 输入校验、媒体容器边界。
 - `src/renderer/`：React 页面、统一控件、Tailwind/CSS 变量与字幕编辑会话交互。
 - `src/preload/`：有限业务 API；不暴露原始 IPC、Node 或 shell。
-- `src/main/`：窗口、托盘、文件对话框、IPC 来源检查和 mpv 原生播放区域。
+- `src/main/`：窗口、托盘、文件对话框、IPC 来源检查和 mpv GPU 合成播放。
 - `src/core/`：引擎验证、处理计划、输出校验、JSON 存储、队列、字幕、波形和异步播放器控制通道。没有 Electron/React 依赖。
 - `src/mcp/`：官方 SDK、回环 HTTP、凭据和来源检查、工具 Schema，以及固定目录的离线指南。
 - `src/core/asr/`：模型/运行包管理、音轨预处理、whisper.cpp 与 JSONL 适配器、统一字幕初稿。`shared/asr.ts` 定义协议、校验与时间映射；“ASR 工作台”负责导入、参数和结果预览。
@@ -34,7 +34,7 @@ McpRequestStore 将目录/转码请求保存在 mcp-requests.json。创建仅校
 
 审批先保存 approving 再执行副作用。最终结果写入失败保持可见的未确认状态；重启只核对已持久化任务或目录授权，不能确认时标记失败，不自动重做。相同 requestKey 和申请内容去重。待审最多 100 条，按审核时间保留最近 1000 条历史，每条 256 KiB、合计 32 MiB；清理不操作媒体或任务。Snapshot 只传计数与 revision，申请页面按 revision 更新，任务进度推送不触发完整申请读取。
 
-shared/shortcuts.ts 定义 14 个操作、默认键、组合键校验、冲突和 mpv 转换。旧配置缺失时迁移默认值；React 从 ShortcutProvider 读取保存值，mpv 原生窗口使用 JSON IPC keybind 更新并忽略旧绑定。设置编辑页与硬件详情同属二级页面，保留父草稿和离开确认；配置保存前更新服务/播放器，存盘失败通过原回调恢复旧值。永久失效的播放会话不阻碍其他设置保存，重建会话应用当前键。Esc 固定退出全屏，文本控件和弹窗保留操作。
+shared/shortcuts.ts 定义播放、字幕和波形操作、默认键、组合键校验与冲突。React 从 ShortcutProvider 读取保存值。视频位于 DOM Canvas，焦点与快捷键由 Chromium 统一处理，没有原生视频窗口夺取键盘焦点。JSON IPC keybind 映射保留为有限控制兼容路径。设置草稿、冲突提示与离开确认保持原有规则；关闭中或永久失败的播放会话不阻塞设置保存。Esc 固定退出全屏，文本控件和弹窗保留自己的操作。
 
 配置内部 shortcutsVersion=2 对旧默认起止键做一次 Q/E 迁移，存在冲突或自定义配置时保留用户值。React 以捕获阶段接收当前可见页面快捷键，按钮、复选框不抑制播放键；文字编辑控件和已展开菜单保留自身操作，音量滑条方向键仍采用 5% 步进。字幕起止操作读取主端播放器时钟，返回后核对工程与条目身份，再修改最新文档中的对应时间，避免拖动后使用旧的 renderer 通知值。
 
@@ -98,7 +98,13 @@ UsageMonitor 为任务页提供独立 systemUsage IPC，不把每秒性能数据
 
 ## mpv 播放
 
-`renderer → preload → MpvPlayers → Windows named pipe → mpv`。主进程为单文件和字幕页面分别创建会话，以固定、经 SHA-256 校验的 mpv.exe 启动。Koffi 调用 Win32 创建 Electron 窗口内的子窗口，mpv 通过 `--wid` 在此区域渲染，使用 D3D11 与可用的安全硬件解码。
+0.32.0 起，控制链路为 `renderer → preload → MpvPlayers → Windows named pipe → libmpv`；图像链路为 `libmpv Render API → D3D11Texture2D → Electron sharedTexture → 隔离 preload → DOM Canvas`。
+
+会话在专用 Node Worker 中加载经 SHA-256 校验的 libmpv DLL，解码、ASS、音轨、截图和帧控制继续由 mpv 完成。使用与 Chromium 相同的活动 DXGI 适配器，直接写入共享 BGRA GPU 纹理。没有 HWND 子窗口、--wid、滚动坐标跟踪、浮层枚举或 GDI 区域裁剪。所有 UI 和视频由 Chromium 合成，新增弹窗无需注册遮挡规则。
+
+渲染与控制分别运行在 Worker 和主进程。纹理池最多三张，快速缩放时退役纹理也计入上限；GPU 查询确认写入完成后发送 NT 句柄，Electron allReferencesReleased 确认 GPU 读取完成后才可复用。没有每帧 PNG、base64 或像素字节 IPC。物理分辨率保持比例并限制至 3840×2160。隐藏表面仍处理 render update，避免控制死锁；关闭时清空画布、排空引用，再释放 render context、mpv、共享句柄和设备。
+
+共享纹理接口为 Electron 实验性 API，因此固定 Electron/mpv 版本，以实际像素合成、字幕、音轨、逐帧、全屏和缩放回归作为升级门槛。句柄与 VideoFrame 不暴露给 renderer；preload 在上下文隔离和 sandbox 开启时绘制普通 Canvas。布局 IPC 仅发送尺寸和活动状态。
 
 播放器不暴露任意 mpv 命令、脚本或可执行路径。公开动作经严格 Schema 校验，再映射为有限命令。文件必须已通过 GUI 对话框或拖放授权；只允许本地容器，强制 lavf 及协议/格式白名单，禁用网络、自动附加文件、用户配置、脚本与 yt-dlp。
 
@@ -112,7 +118,7 @@ IPC 按请求 ID 关联异步响应，处理拆分消息、超时、进程退出
 
 静态参数目录在 src/shared/parameters.ts；严格 Schema 与核心计划共用同一数据模型。组件 AVOptions 从引擎帮助解析、缓存并验证，不能指定执行文件、额外输入输出或任意命令。滤镜值经过 AVOption 与 filtergraph 两层转义，直接传入 spawn。字幕引用经与输入相同的路径授权，任务启动时重新检查真实路径。新字段可选，旧预设和处理请求保持兼容。
 
-预设 JSON 带 format/version；导入整批验证后原子保存，并为每项生成新的个人 ID。导出独占写入，不保存输入轨道与当前预设引用。详细参数编辑器使用草稿，取消不修改参数；主面板和批量共用组件。Radix 菜单/对话框提供键盘操作和焦点管理；下拉菜单使用滚轮和自绘滑条，滑条采用指针捕获，支持拖动、轨道点击和键盘滚动。renderer 为交叠菜单/提示发送完整边界和圆角半径，主进程使用 SetWindowRgn 与圆角区域局部裁剪原生窗口；菜单没有外部阴影，裁剪按同一屏幕像素原点取整，透明圆角继续显示视频，避免周围露出黑色底层。退出弹窗期间隐藏原生视频表面以覆盖完整遮罩，取消退出后恢复显示，不重载媒体；参数编辑弹窗保留原有局部裁剪。
+预设 JSON 带 format/version；导入整批验证后原子保存，并为每项生成新的个人 ID。导出独占写入，不保存输入轨道与当前预设引用。详细参数编辑器使用草稿，取消不修改参数；主面板和批量共用组件。Radix 菜单/对话框提供键盘操作和焦点管理；下拉菜单使用滚轮和自绘滑条，滑条采用指针捕获，支持拖动、轨道点击和键盘滚动。播放器、菜单、提示、退出确认框和参数编辑弹窗均由 Chromium 合成。圆角、阴影、透明遮罩和滚动裁剪使用标准 CSS，不枚举浮层或对视频矩形挖洞。
 
 ## 操作反馈与退出
 

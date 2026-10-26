@@ -26,7 +26,7 @@ ${JSON.stringify({hardware:devices,detectedPython:detected,models:assets,discove
 1. 优先复用检测到的兼容 Python 作为创建虚拟环境的基础；不覆盖或升级其他应用已有环境。没有兼容 Python 时，在上述安装目录下准备官方 Python，避免把大文件放到 C 盘。根据当前平台自行选择执行工具；无法访问本机时请明确说明，并给出可执行步骤。
 2. 将新环境、依赖、源码、下载缓存及临时文件放在应用根目录下。仅为本次命令设置 PIP_CACHE_DIR=${child('cache\\pip')}、HF_HOME=${child('cache\\huggingface')}、TORCH_HOME=${child('cache\\torch')}、TEMP/TMP=${child('temp')}；先创建这些目录，不修改全局环境变量。避免默认的用户目录缓存。先检查可写权限和剩余磁盘空间。
 3. 按已验证版本安装独立依赖，根据真实 NVIDIA/CUDA 状态选择 PyTorch 官方构建；已验证 NVIDIA 构建为 torch/torchaudio 2.8.0+cu126，官方源 https://download.pytorch.org/whl/cu126 。无兼容 GPU 时使用官方 CPU 构建。不要为安装依赖重装显卡驱动或改变其他项目。
-4. 模型下载由应用内“模型下载与管理”完成。已有的模型和辅助模型见上方数据，直接使用本地路径，禁止重复下载到 C 盘。Qwen 时间戳需在应用下载或导入 ForcedAligner。
+4. 模型文件下载和导入由应用内“资源管理 → ASR”完成；Python 与 PyTorch/CUDA/Transformers 资源位于“资源管理 → 环境”。已有的模型和辅助模型见上方数据，直接使用本地路径，禁止重复下载到 C 盘。Qwen 时间戳需在应用下载或导入 ForcedAligner。
 5. 检查 Python、依赖版本、CUDA 可用性和显存；运行应用探测脚本：目标 Python -u 探测脚本 --probe ${backend}。仅引用上方给出的已验证路径和官方来源；安装或检查失败时保留实际错误，不声称成功。
-6. 完成后给出实际 Python 路径、版本、依赖与设备检查结果。提醒用户返回“运行环境管理 → 检测本机 Python”，选择该环境并“保存并检查”，然后绑定已下载模型。应用自动发现安装目录下的 environments 子目录，无需用户寻找 C 盘的 python.exe。`
+6. 完成后给出实际 Python 路径、版本、依赖与设备检查结果。提醒用户返回“资源管理 → 环境 → 本机 Python 与手动兼容配置 → 重新检测 Python”，选择该环境并“添加此环境 / 保存并检查”，然后在“资源管理 → ASR”绑定已下载模型。应用自动发现安装目录下的 environments 子目录，无需用户寻找 C 盘的 python.exe。`
 }

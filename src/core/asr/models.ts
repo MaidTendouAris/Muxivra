@@ -15,13 +15,14 @@ import { pythonAsrBackends,parseAsrParameters } from '../../shared/asr-parameter
 import { trackChildTree,terminateChild } from '../jobs/process-control'
 import { fetchDownload,explainDownloadError } from '../download-network'
 import { managedAsrAssetSchema,officialAsrCatalog,type ManagedAsrAsset } from '../../shared/asr-catalog'
-import { copyModel,asrProcessEnvironment,requireSpace } from './storage'
+import { copyModel,asrProcessEnvironment,requireSpace,collectFiles } from './storage'
 import { downloadOfficialModel } from './official-download'
 import { discoverPython } from './python-discovery'
 import type { PythonDiscovery } from '../../shared/asr-environments'
-import { asrDeploymentRequestSchema,nvidiaProfile,type AsrDeployment,type AsrDeploymentRequest,type NvidiaDetection } from '../../shared/asr-deployment'
+import { asrDeploymentRequestSchema,asrConfigureModelSchema,asrResourceRequestSchema,asrResourceSchema,nvidiaProfile,type AsrDeployment,type AsrDeploymentRequest,type NvidiaDetection,type AsrResource,type AsrResourceRequest,type AsrConfigureModelRequest } from '../../shared/asr-deployment'
 import { detectNvidia } from './nvidia'
 import { prepareNvidiaPython,verifyNvidiaEnvironment,deploymentManifest,deploymentCommand,type PreparedEnvironment,type DeploymentContext } from './deployment'
+import { downloadPythonResource,downloadDependencyResource,importPreparedResource,downloadedResourceStatus,prepareOfflineNvidiaPython,discoverPreparedResource } from './resources'
 
 export const whisperRuntimeCatalog = {
   cpu:{name:'whisper.cpp b5454 · CPU',url:'https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip',sha256:'6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb',size:8928640},
@@ -30,11 +31,11 @@ export const whisperRuntimeCatalog = {
 export const largeV3Catalog = {name:'Whisper large-v3',file:'ggml-large-v3.bin',url:'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin',sha256:'64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2',size:3095033483} as const
 const exec=promisify(execFile)
 type Runtime=AsrState['runtimes'][number]
-interface Config {version:1;models:AsrModel[];runtimes:Runtime[];environments?:AsrEnvironment[];assets?:ManagedAsrAsset[];disabled?:{models:unknown[];environments:unknown[];assets:unknown[]}}
-export async function verifyWhisperRuntime(input:string):Promise<string> {
+interface Config {version:1;models:AsrModel[];runtimes:Runtime[];environments?:AsrEnvironment[];assets?:ManagedAsrAsset[];resources?:AsrResource[];disabled?:{models:unknown[];environments:unknown[];assets:unknown[]}}
+export async function verifyWhisperRuntime(input:string,context?:DeploymentContext):Promise<string> {
   const executable=await canonicalInput(input)
-  const result=await exec(executable,['--help'],{windowsHide:true,timeout:15000,maxBuffer:1024*1024})
-  const help=result.stdout+result.stderr
+  const result=context?undefined:await exec(executable,['--help'],{windowsHide:true,timeout:15000,maxBuffer:1024*1024})
+  const help=context?await deploymentCommand(executable,['--help'],{...context,offline:true,captureStderr:true},15000):result!.stdout+result!.stderr
   if(!help.includes('--output-json-full')||!help.includes('--model'))throw new Error('请选择支持完整 JSON 时间戳输出的 whisper-cli.exe，不能使用其他程序')
   return executable
 }
@@ -50,11 +51,12 @@ export class AsrModels {
   private runtimes:Runtime[]=[]
   private environments:AsrEnvironment[]=[]
   private assets:ManagedAsrAsset[]=[]
+  private resources:AsrResource[]=[]
   private disabled:NonNullable<Config['disabled']>={models:[],environments:[],assets:[]}
   private deployment:AsrDeployment={active:false,phase:'idle',message:'',logTail:''}
   private nvidia?:NvidiaDetection
   private deploymentController?:AbortController
-  private deploymentTask?:Promise<AsrModel>
+  private deploymentTask?:Promise<unknown>
   private discovery:PythonDiscovery={active:false,candidates:[],issues:[]}
   private discoveryTask?:Promise<void>
   private operation:Promise<unknown>=Promise.resolve()
@@ -72,12 +74,15 @@ export class AsrModels {
     this.models=saved.models.filter(value=>!retired(value)).map(model=>asrModelSchema.parse(model));this.runtimes=saved.runtimes
     this.environments=(saved.environments??[]).filter(value=>!retired(value)).map(value=>asrEnvironmentSchema.parse(value))
     this.assets=(saved.assets??[]).filter(value=>!retired(value)).map(value=>managedAsrAssetSchema.parse(value))
+    this.resources=await Promise.all((saved.resources??[]).map(value=>asrResourceSchema.parse(value)).map(async value=>value.kind==='whisper-runtime'?{...value,ready:await exists(value.path)}:downloadedResourceStatus(value)))
+    for(const environment of this.environments)if(!await exists(environment.pythonPath))environment.probe={ready:false,python:environment.probe?.python??'无法读取',platform:process.platform,versions:environment.probe?.versions??{},cudaAvailable:false,devices:[],issues:['环境解释器不存在，请重新配置或导入'],warnings:[],checkedAt:new Date().toISOString(),vllm:false}
     this.assets=(await Promise.all(this.assets.map(async asset=>await exists(asset.path)?asset:undefined))).filter((asset):asset is ManagedAsrAsset=>!!asset)
     for(const model of this.models){try{await stat(model.modelPath);await canonicalInput(this.environments.find(e=>e.id===model.environmentId)?.pythonPath??model.executable);model.availability='ready';delete model.issue}catch{model.availability='missing';model.issue='模型或运行程序无法读取，请重新导入'}}
     this.runtimes=(await Promise.all(this.runtimes.map(async r=>await exists(r.executable)?r:undefined))).filter((r):r is Runtime=>!!r)
+    await this.discoverStoredResources()
     await mkdir(join(this.root,'results'),{recursive:true});await this.save()
   }
-  state():AsrState{return structuredClone({models:this.models.map(model=>this.resolveModel(model)),runtimes:this.runtimes,download:this.download,environments:this.environments,assets:this.assets,storageRoot:this.storageRoot,adapterPath:this.adapterPath,discovery:this.discovery,deployment:this.deployment,nvidia:this.nvidia})}
+  state():AsrState{return structuredClone({models:this.models.map(model=>this.resolveModel(model)),runtimes:this.runtimes,download:this.download,environments:this.environments,assets:this.assets,storageRoot:this.storageRoot,adapterPath:this.adapterPath,discovery:this.discovery,deployment:this.deployment,nvidia:this.nvidia,resources:this.resources})}
   private resolveModel(model:AsrModel):AsrModel{
     model={...model,storageRoot:this.storageRoot}
     if(!model.environmentId)return model
@@ -88,7 +93,7 @@ export class AsrModels {
   get(id:string):AsrModel{const model=this.models.find(m=>m.id===id);if(!model)throw new Error('ASR 模型不存在，请先导入模型');return structuredClone(this.resolveModel(model))}
   runtime(id:string):string{const runtime=this.runtimes.find(r=>r.id===id);if(!runtime)throw new Error('推理运行包不存在');return runtime.executable}
   private exclusive<T>(fn:()=>Promise<T>):Promise<T>{const task=this.operation.catch(()=>{}).then(fn);this.operation=task;return task}
-  private async save(){await this.store.write({version:1,models:this.models,runtimes:this.runtimes,environments:this.environments,assets:this.assets,disabled:this.disabled});this.update()}
+  private async save(){await this.store.write({version:1,models:this.models,runtimes:this.runtimes,environments:this.environments,assets:this.assets,resources:this.resources,disabled:this.disabled});this.update()}
   private guardDeployment(internal=false){if(this.deployment.active&&!internal)throw new Error('一键部署正在进行，请等待完成或取消后再修改模型环境')}
   private async checkEnvironment(pythonPath:string,args:string[]):Promise<AsrEnvironment['probe']>{
     this.environmentChecks.signal.throwIfAborted()
@@ -102,6 +107,33 @@ export class AsrModels {
       return asrProbeSchema.parse(JSON.parse(result.stdout.trim()))
     }catch(error){await operation.catch(()=>{});if(timedOut)throw new Error('运行环境检查超过 90 秒，请检查依赖和 Python 路径');throw error}
     finally{if(timer)clearTimeout(timer);this.environmentChecks.signal.removeEventListener('abort',abort)}
+  }
+  private async discoverStoredResources(){
+    const components=join(this.storageRoot,'components')
+    if(await exists(components))for(const entry of (await readdir(components,{withFileTypes:true})).slice(0,200)){const path=join(components,entry.name);if(!entry.isDirectory()||entry.isSymbolicLink()||this.resources.some(value=>resolve(value.path).toLowerCase()===resolve(path).toLowerCase()))continue;try{const actual=await realpath(path);if(actual.toLowerCase()!==resolve(path).toLowerCase())continue;this.resources.push(await discoverPreparedResource(actual))}catch(error){this.resources.push({id:randomUUID(),kind:entry.name.startsWith('python')?'python':'dependencies',name:entry.name,path,versions:{},bytes:0,createdAt:new Date().toISOString(),source:'import',ready:false,issue:'资源清单无法读取（大小未统计）：'+(error as Error).message})}}
+    const directory=join(this.storageRoot,'environments')
+    if(!await exists(directory))return
+    for(const entry of (await readdir(directory,{withFileTypes:true})).slice(0,100)){
+      if(!entry.isDirectory()||entry.isSymbolicLink())continue
+      const path=join(directory,entry.name),pythonPath=join(path,'Scripts','python.exe'),file=join(path,'muxivra-managed.json')
+      if(this.environments.some(value=>resolve(value.pythonPath).toLowerCase()===resolve(pythonPath).toLowerCase())||!await exists(file)||!await exists(pythonPath))continue
+      try{
+        if((await stat(file)).size>65536||(await realpath(path)).toLowerCase()!==resolve(path).toLowerCase())continue
+        const manifest=JSON.parse(await readFile(file,'utf8'))
+        if(!pythonAsrBackends.includes(manifest.backend)||!['cu126','cu128'].includes(manifest.profile)||typeof manifest.gpuUuid!=='string'||typeof manifest.version!=='string')continue
+        // Inventory must not launch an unregistered interpreter or delay app
+        // startup on a broken environment. Read its installed metadata only;
+        // explicit Refresh performs the real import/CUDA checks later.
+        const versions:Record<string,string>={},site=join(path,'Lib','site-packages')
+        if(await exists(site)&&(await realpath(site)).toLowerCase()===resolve(site).toLowerCase())for(const item of (await readdir(site,{withFileTypes:true})).filter(value=>value.isDirectory()&&!value.isSymbolicLink()&&value.name.endsWith('.dist-info')).slice(0,500)){
+          const metadata=join(site,item.name,'METADATA');try{if((await stat(metadata)).size>1024*1024||(await realpath(metadata)).toLowerCase()!==resolve(metadata).toLowerCase())continue;const text=await readFile(metadata,'utf8'),name=/^Name:\s*(.+)$/m.exec(text)?.[1]?.trim().toLowerCase().replaceAll('_','-'),version=/^Version:\s*(.+)$/m.exec(text)?.[1]?.trim();if(name&&version)versions[name]=version}catch{}
+        }
+        let python='未验证';const config=join(path,'pyvenv.cfg');if(await exists(config)&&(await stat(config)).size<65536)python=/^version\s*=\s*(.+)$/m.exec(await readFile(config,'utf8'))?.[1]?.trim()??python
+        const torchVersion=join(site,'torch','version.py');if(await exists(torchVersion)&&(await stat(torchVersion)).size<65536&&(await realpath(torchVersion)).toLowerCase()===resolve(torchVersion).toLowerCase()){const text=await readFile(torchVersion,'utf8');versions.cuda=/^cuda(?:\s*:\s*[^=]+)?\s*=\s*['"]([^'"]+)['"]/m.exec(text)?.[1]??(/^cuda(?:\s*:\s*[^=]+)?\s*=\s*None/m.test(text)?'CPU':'未验证')}
+        const probe={ready:false,python,platform:process.platform,versions,cudaAvailable:false,devices:[],issues:['检测到未登记的本地环境；请点击重新检测验证后使用'],warnings:[],checkedAt:new Date().toISOString(),vllm:false}
+        this.environments.push(asrEnvironmentSchema.parse({id:randomUUID(),name:manifest.backend+' · 已发现环境',backend:manifest.backend,pythonPath,probe,createdAt:manifest.createdAt??new Date().toISOString(),managed:{version:manifest.version,profile:manifest.profile,gpuUuid:manifest.gpuUuid,directory:path}}))
+      }catch{}
+    }
   }
   saveEnvironment(input:AsrEnvironmentRequest){return this.exclusive(async()=>{
     this.guardDeployment()
@@ -174,6 +206,18 @@ export class AsrModels {
     const value:ManagedAsrAsset={id:asset.id,name:asset.name,backend:asset.backend,role:asset.role,path:downloaded.path,bytes:downloaded.bytes,repo:asset.repo,revision:asset.revision,createdAt:new Date().toISOString()}
     await this.exclusive(async()=>{this.assets.push(value);await this.save()});return value
   }
+  async importModelAsset(request:{name:string;backend:'whisper.cpp'|typeof pythonAsrBackends[number];modelPath:string}){
+    this.guardDeployment();if(!request.name.trim()||request.name.length>200)throw new Error('请输入有效模型名称')
+    const input=await realpath(localPath(request.modelPath))
+    if(request.backend==='whisper.cpp')await verifyWhisperModel(input)
+    else{
+      if(!pythonAsrBackends.includes(request.backend)||!(await stat(input)).isDirectory())throw new Error('请选择支持的完整模型目录')
+      const config=join(input,'config.json');if((await stat(config)).size>1024*1024)throw new Error('模型配置超过 1 MB');const metadata=JSON.parse(await readFile(config,'utf8'))
+      if(!({'qwen3-asr':['qwen3_asr'],'moss-transcribe-diarize':['moss_transcribe_diarize','moss_td','moss_asr']}[request.backend].includes(metadata.model_type))||!(await readdir(input)).some(name=>/\.(safetensors|bin)$/.test(name)))throw new Error('模型 config.json 与后端不匹配，或缺少完整权重')
+    }
+    const copied=await this.transfer('导入模型文件',signal=>copyModel(input,this.storageRoot,request.name,signal,update=>this.setTransfer(update))),value:ManagedAsrAsset={id:randomUUID(),name:request.name.trim(),backend:request.backend,role:'model',path:copied.path,bytes:copied.bytes,createdAt:new Date().toISOString()}
+    await this.exclusive(async()=>{this.assets.push(value);await this.save()});return value
+  }
   async importComponent(path:string,role:'aligner'){
     this.guardDeployment();if(role!=='aligner')throw new Error('此辅助模型暂不支持')
     const input=await realpath(localPath(path));if(!(await stat(input)).isDirectory())throw new Error('请选择完整辅助模型目录')
@@ -192,12 +236,68 @@ export class AsrModels {
   async remove(id:string):Promise<void>{await this.exclusive(async()=>{this.guardDeployment();const previous=this.models;this.models=previous.filter(m=>m.id!==id);try{await this.save()}catch(error){this.models=previous;throw error}})}
   saveRecognition(id:string,input:AsrRecognition){return this.exclusive(async()=>{this.guardDeployment();const model=this.get(id),recognition=asrRecognitionSchema.parse(input);recognition.parameters=parseAsrParameters(model.backend,recognition.parameters);const previous=this.models;this.models=previous.map(m=>m.id===id?{...m,recognition}:m);try{await this.save()}catch(error){this.models=previous;throw error}return recognition})}
   async detectNvidia(){this.nvidia=await detectNvidia();this.update();return structuredClone(this.nvidia)}
+  private resourceOperation<T>(request:AsrResourceRequest,operation:(context:DeploymentContext)=>Promise<T>):Promise<T>{
+    if(this.closing)throw new Error('应用正在退出');if(this.deploymentController||this.controller)throw new Error('已有 ASR 资源操作正在进行')
+    const controller=new AbortController();this.deploymentController=controller
+    this.deployment={active:true,phase:request.kind==='python'?'runtime':'detecting',assetId:request.assetId,gpuIndex:request.gpuIndex,message:'正在准备资源操作…',logTail:'',startedAt:new Date().toISOString(),logPath:join(this.storageRoot,'logs',`resource-${randomUUID()}.log`)};this.update()
+    const task=(async()=>{
+      const detection=request.kind==='python'?undefined:await this.detectNvidia(),gpu=detection?.devices.find(value=>value.index===request.gpuIndex)
+      if(request.kind!=='python'&&!gpu)throw new Error(detection?.issue??'所选 NVIDIA GPU 不可用')
+      const context:DeploymentContext={root:this.storageRoot,signal:controller.signal,logPath:this.deployment.logPath!,gpu:gpu??{index:0,uuid:'',name:'',driver:'',computeMajor:0,computeMinor:0,totalBytes:0,freeBytes:0},profile:gpu?nvidiaProfile(gpu):'cu126',update:value=>{this.deployment={...this.deployment,...value};this.update()}}
+      return operation(context)
+    })().catch(async error=>{
+      const detail=JSON.stringify({type:controller.signal.aborted?'cancelled':'resource-error',message:(error as Error).message})+'\n';await mkdir(dirname(this.deployment.logPath!),{recursive:true}).then(()=>appendFile(this.deployment.logPath!,detail)).catch(()=>{})
+      this.deployment={...this.deployment,logTail:(this.deployment.logTail+'\n'+detail).slice(-12000)};throw error
+    })
+    this.deploymentTask=task
+    void task.then(()=>{this.deploymentController=undefined;this.deploymentTask=undefined;this.deployment={...this.deployment,active:false,phase:'completed',message:'资源已准备完成，可在环境页执行离线配置',finishedAt:new Date().toISOString()};this.update()},error=>{
+      this.deploymentController=undefined;this.deploymentTask=undefined;this.deployment={...this.deployment,active:false,phase:controller.signal.aborted?'cancelled':'failed',message:controller.signal.aborted?'资源操作已取消':(error as Error).message,finishedAt:new Date().toISOString()};this.update()
+    })
+    return task
+  }
+  downloadResource(input:AsrResourceRequest){const request=asrResourceRequestSchema.parse(input);return this.resourceOperation(request,async context=>{
+    let resource:AsrResource
+    if(request.kind==='python')resource=await downloadPythonResource(context)
+    else if(request.kind==='dependencies')resource=await downloadDependencyResource(officialAsrCatalog.find(value=>value.id===request.assetId)!.backend,this.resources,context)
+    else{
+      if(!this.runtimes.some(value=>value.id==='whisper-b5454-cuda'))await this.install('runtime','cuda',true)
+      const runtime=this.runtimes.find(value=>value.id==='whisper-b5454-cuda')!,path=dirname(runtime.executable)
+      resource={id:randomUUID(),kind:'whisper-runtime',name:whisperRuntimeCatalog.cuda.name,path,backend:'whisper.cpp',runtimeId:runtime.id,versions:{'whisper.cpp':'b5454',cuda:'12.4'},bytes:(await collectFiles(path)).reduce((sum,file)=>sum+file.size,0),createdAt:new Date().toISOString(),source:'download',ready:true}
+    }
+    await this.exclusive(async()=>{context.signal.throwIfAborted();if(this.closing)throw new Error('应用正在退出');this.resources.push(resource);await this.save()});return resource
+  })}
+  importResource(input:AsrResourceRequest,path:string){const request=asrResourceRequestSchema.parse(input);return this.resourceOperation(request,async context=>{
+    let resource:AsrResource
+    if(request.kind==='whisper-runtime'){
+      const source=await realpath(localPath(path));await verifyWhisperRuntime(await findCli(source),context);const copied=await copyModel(source,this.storageRoot,'Whisper CUDA 运行包',context.signal,value=>context.update({message:value.message})),executable=await verifyWhisperRuntime(await findCli(copied.path),context),runtime={id:`whisper-import-${randomUUID()}-cuda`,name:'Whisper · 导入运行包',executable}
+      resource={id:randomUUID(),kind:'whisper-runtime',name:runtime.name,path:copied.path,backend:'whisper.cpp',runtimeId:runtime.id,versions:{'whisper.cpp':'导入（配置时验证 GPU）'},bytes:copied.bytes,createdAt:new Date().toISOString(),source:'import',ready:true};context.signal.throwIfAborted();await this.exclusive(async()=>{context.signal.throwIfAborted();if(this.closing)throw new Error('应用正在退出');this.runtimes.push(runtime);await this.save()})
+    }else resource=await importPreparedResource(path,request.kind,context,request.kind==='dependencies'?officialAsrCatalog.find(value=>value.id===request.assetId)!.backend:undefined)
+    await this.exclusive(async()=>{context.signal.throwIfAborted();if(this.closing)throw new Error('应用正在退出');this.resources.push(resource);await this.save()});return resource
+  })}
   cancelDeployment(){this.deploymentController?.abort();this.cancelDownload();if(this.deployment.active){this.deployment={...this.deployment,message:'正在取消部署并清理未完成环境…'};this.update()}}
+  async deploymentPlan(input:AsrDeploymentRequest):Promise<import('../../shared/asr-deployment').AsrDeploymentPlan>{
+    const request=asrDeploymentRequestSchema.parse(input),detection=await this.detectNvidia(),gpu=detection.devices.find(item=>item.index===request.gpuIndex);if(!gpu)throw new Error(detection.issue??'NVIDIA GPU unavailable');const profile=nvidiaProfile(gpu)
+    await this.discoverStoredResources();this.resources=await Promise.all(this.resources.map(item=>item.kind==='whisper-runtime'?item:downloadedResourceStatus(item)));await this.save()
+    const backend=request.assetId==='whisper-large-v3'?'whisper.cpp':officialAsrCatalog.find(item=>item.id===request.assetId)!.backend
+    const environment=this.environments.find(item=>item.backend===backend&&item.managed?.version===deploymentManifest.version&&item.managed.profile===profile&&item.managed.gpuUuid===gpu.uuid)
+    const items:import('../../shared/asr-deployment').AsrDeploymentPlan['items']=[]
+    const add=async(name:string,path?:string)=>items.push({name,status:path&&await exists(path)?'reuse':'download',path})
+    if(backend==='whisper.cpp')await add('Whisper CUDA',this.runtimes.find(item=>item.id.endsWith('-cuda'))?.executable)
+    else if(environment&&await exists(environment.pythonPath))await add('Python / PyTorch / CUDA / Transformers',environment.pythonPath)
+    else{await add('Python 3.12',this.resources.find(item=>item.kind==='python'&&item.ready)?.path);await add(backend+' / '+profile,this.resources.find(item=>item.kind==='dependencies'&&item.backend===backend&&item.profile===profile&&item.ready)?.path)}
+    await add(request.assetId,this.assets.find(item=>item.id===request.assetId)?.path)
+    if(backend==='qwen3-asr'&&request.includeAligner)await add('Qwen ForcedAligner',this.assets.find(item=>item.id==='qwen-aligner')?.path)
+    return {checkedAt:new Date().toISOString(),assetId:request.assetId,gpuIndex:gpu.index,profile,items}
+  }
   deployNvidia(input:AsrDeploymentRequest):Promise<AsrModel>{
+    return this.beginDeployment(asrDeploymentRequestSchema.parse(input))
+  }
+  configureModel(input:AsrConfigureModelRequest):Promise<AsrModel>{return this.beginDeployment(asrConfigureModelSchema.parse(input),true)}
+  private beginDeployment(request:AsrConfigureModelRequest,offline=false):Promise<AsrModel>{
     if(this.closing)throw new Error('应用正在退出');if(this.deploymentController||this.controller)throw new Error('已有 ASR 下载或部署正在进行')
-    const request=asrDeploymentRequestSchema.parse(input),controller=new AbortController();this.deploymentController=controller
+    const controller=new AbortController();this.deploymentController=controller
     this.deployment={active:true,phase:'detecting',assetId:request.assetId,gpuIndex:request.gpuIndex,message:'读取 NVIDIA GPU 与驱动…',logTail:'',startedAt:new Date().toISOString(),logPath:join(this.storageRoot,'logs',`deploy-${randomUUID()}.log`)};this.update()
-    const task=this.performDeployment(request,controller.signal).catch(async error=>{
+    const task=this.performDeployment(request,controller.signal,offline).catch(async error=>{
       const detail=JSON.stringify({type:controller.signal.aborted?'cancelled':'deployment-error',phase:this.deployment.phase,message:(error as Error).message})+'\n'
       await mkdir(dirname(this.deployment.logPath!),{recursive:true}).then(()=>appendFile(this.deployment.logPath!,detail)).catch(()=>{})
       this.deployment={...this.deployment,logTail:(this.deployment.logTail+'\n'+detail).slice(-12000)}
@@ -207,33 +307,45 @@ export class AsrModels {
     void task.then(model=>{this.deployment={...this.deployment,active:false,phase:'completed',message:'部署完成，模型已启用 NVIDIA GPU',modelId:model.id,finishedAt:new Date().toISOString()};this.update()},error=>{this.deployment={...this.deployment,active:false,phase:controller.signal.aborted?'cancelled':'failed',message:controller.signal.aborted?'部署已取消；已完成的模型与环境保留':(error as Error).message,finishedAt:new Date().toISOString()};this.update()}).finally(()=>{this.deploymentController=undefined;this.deploymentTask=undefined})
     return task
   }
-  private async performDeployment(request:AsrDeploymentRequest,signal:AbortSignal):Promise<AsrModel>{
+  private async performDeployment(request:AsrConfigureModelRequest,signal:AbortSignal,offline=false):Promise<AsrModel>{
+    if(!offline){this.deployment.message='Checking reusable local resources before downloads';this.update();await this.deploymentPlan(request as AsrDeploymentRequest);signal.throwIfAborted()}
+    const preparedAsset=this.assets.find(value=>value.id===request.assetId&&value.role==='model'),catalogAsset=officialAsrCatalog.find(value=>value.id===request.assetId&&value.role==='model'),whisper=preparedAsset?.backend==='whisper.cpp'||request.assetId==='whisper-large-v3'
+    if(offline&&!preparedAsset)throw new Error('请先在资源管理 ASR 页下载或导入目标模型文件')
+    if(offline&&preparedAsset?.backend==='qwen3-asr'&&request.includeAligner&&!this.assets.some(value=>value.role==='aligner'&&value.backend==='qwen3-asr'))throw new Error('请先下载或导入 Qwen 对齐模型，或关闭词级对齐')
     const detected=await this.detectNvidia(),gpu=detected.devices.find(value=>value.index===request.gpuIndex);signal.throwIfAborted();if(!gpu)throw new Error(detected.issue??'所选 NVIDIA GPU 不可用')
-    const profile=nvidiaProfile(gpu),context:DeploymentContext={root:this.storageRoot,signal,logPath:this.deployment.logPath!,gpu,profile,update:value=>{this.deployment={...this.deployment,...value};this.update()}}
-    await requireSpace(this.storageRoot,(request.assetId==='whisper-large-v3'?8:18)*1024**3)
+    const profile=nvidiaProfile(gpu),context:DeploymentContext={root:this.storageRoot,signal,logPath:this.deployment.logPath!,gpu,profile,offline,update:value=>{this.deployment={...this.deployment,...value};this.update()}}
+    await requireSpace(this.storageRoot,64*1024**2)
     let environment:AsrEnvironment|undefined,executable:string|undefined
-    if(request.assetId==='whisper-large-v3'){
+    if(whisper){
       context.update({phase:'runtime',message:'安装 NVIDIA Whisper 运行包'})
-      const runtime=this.runtimes.find(value=>value.id==='whisper-b5454-cuda')
-      if(!runtime)await this.install('runtime','cuda',true);signal.throwIfAborted();executable=this.runtime('whisper-b5454-cuda')
+      const runtime=this.runtimes.find(value=>value.id==='whisper-b5454-cuda')??this.runtimes.find(value=>value.id.endsWith('-cuda'))
+      if(!runtime&&offline)throw new Error('请先在环境页下载或导入 Whisper CUDA 运行包')
+      if(!runtime)await this.install('runtime','cuda',true);signal.throwIfAborted();executable=runtime?.executable??this.runtime('whisper-b5454-cuda')
       context.update({phase:'model',message:'准备官方 Whisper large-v3 模型'})
-      if(!this.assets.some(value=>value.id===request.assetId))await this.install('model','cuda',true)
+      if(!offline&&!this.assets.some(value=>value.id===request.assetId))await this.install('model','cuda',true)
     }else{
-      const asset=officialAsrCatalog.find(value=>value.id===request.assetId)!;const backend=asset.backend
+      const asset=preparedAsset??catalogAsset;if(!asset||!pythonAsrBackends.includes(asset.backend as typeof pythonAsrBackends[number]))throw new Error('目标模型后端不支持 NVIDIA 环境配置');const backend=asset.backend as typeof pythonAsrBackends[number]
       const previous=this.environments.find(value=>value.backend===backend&&value.managed?.version===deploymentManifest.version&&value.managed.profile===profile&&value.managed.gpuUuid===gpu.uuid&&isWithin(this.storageRoot,value.managed.directory)&&isWithin(value.managed.directory,value.pythonPath))
       let prepared:PreparedEnvironment|undefined
       if(previous){try{prepared={directory:previous.managed!.directory,pythonPath:previous.pythonPath,probe:await verifyNvidiaEnvironment(previous.pythonPath,backend,this.adapterPath,context)}}catch(error){signal.throwIfAborted();context.update({message:'已有自动环境检查未通过，准备新的独立环境',logTail:String(error)})}}
-      prepared??=await prepareNvidiaPython(backend,this.adapterPath,context);signal.throwIfAborted()
-      environment=asrEnvironmentSchema.parse({id:previous?.id??randomUUID(),name:backend+' · NVIDIA 自动部署',backend,pythonPath:prepared.pythonPath,probe:prepared.probe,createdAt:previous?.createdAt??new Date().toISOString(),managed:{version:deploymentManifest.version,profile,gpuUuid:gpu.uuid,directory:prepared.directory}})
+      if(!prepared){
+        if(!offline){
+          if(!this.resources.some(item=>item.kind==='python'&&item.ready)){const resource=await downloadPythonResource(context);this.resources.push(resource);await this.save()}
+          if(!this.resources.some(item=>item.kind==='dependencies'&&item.backend===backend&&item.profile===profile&&item.ready)){const resource=await downloadDependencyResource(backend,this.resources,context);this.resources.push(resource);await this.save()}
+        }
+        prepared=await prepareOfflineNvidiaPython(backend,this.adapterPath,this.resources,context)
+      }
+      signal.throwIfAborted()
+      environment=asrEnvironmentSchema.parse({...previous,id:previous?.id??randomUUID(),name:backend+' · NVIDIA 自动部署',backend,pythonPath:prepared.pythonPath,probe:prepared.probe,createdAt:previous?.createdAt??new Date().toISOString(),managed:{version:deploymentManifest.version,profile,gpuUuid:gpu.uuid,directory:prepared.directory}})
       await this.exclusive(async()=>{this.environments=[...this.environments.filter(value=>value.id!==environment!.id),environment!];await this.save()})
       context.update({phase:'model',message:'准备官方模型与对齐资源'})
-      if(!this.assets.some(value=>value.id===request.assetId))await this.downloadModel(request.assetId,true)
-      if(backend==='qwen3-asr'&&request.includeAligner&&!this.assets.some(value=>value.id==='qwen-aligner'))await this.downloadModel('qwen-aligner',true)
+      if(!offline&&!this.assets.some(value=>value.id===request.assetId))await this.downloadModel(request.assetId,true)
+      if(!offline&&backend==='qwen3-asr'&&request.includeAligner&&!this.assets.some(value=>value.id==='qwen-aligner'))await this.downloadModel('qwen-aligner',true)
       signal.throwIfAborted()
-      if(backend==='qwen3-asr'&&request.includeAligner){environment={...environment,alignerPath:this.assets.find(value=>value.id==='qwen-aligner')?.path};await this.exclusive(async()=>{this.environments=this.environments.map(value=>value.id===environment!.id?environment!:value);await this.save()})}
+      if(backend==='qwen3-asr'&&request.includeAligner){environment={...environment,alignerPath:this.assets.find(value=>value.id==='qwen-aligner')?.path??this.assets.find(value=>value.role==='aligner'&&value.backend==='qwen3-asr')?.path};await this.exclusive(async()=>{this.environments=this.environments.map(value=>value.id===environment!.id?environment!:value);await this.save()})}
     }
     signal.throwIfAborted();const asset=this.assets.find(value=>value.id===request.assetId);if(!asset)throw new Error('模型资源未完成下载')
-    if(request.assetId==='whisper-large-v3'){
+    if(whisper){
       context.update({phase:'verifying',message:'验证 Whisper 模型加载与实际 NVIDIA 推理'})
       const directory=join(this.storageRoot,`.transfer-${randomUUID()}`);await mkdir(directory,{recursive:true})
       try{
@@ -288,8 +400,8 @@ export class AsrModels {
       set({active:false,phase:'completed',message:kind==='model'?`模型已下载：${join(target,largeV3Catalog.file)}。请选择运行包后导入。`:'运行包已安装',percent:100})
       if(kind==='model'){
         await this.exclusive(async()=>{this.assets.push({id,name:asset.name,backend:'whisper.cpp',role:'model',path:join(target,largeV3Catalog.file),bytes:asset.size,createdAt:new Date().toISOString()});await this.save()})
-        const cli=this.runtimes.find(r=>r.id.endsWith('-cuda'))??this.runtimes[0]
-        if(cli&&!skipBinding){const model=await this.import({backend:'whisper.cpp',name:asset.name,modelPath:join(target,largeV3Catalog.file),executable:cli.executable});await this.exclusive(async()=>{this.models=this.models.map(m=>m.id===model.id?{...m,sha256:asset.sha256}:m);await this.save()})}
+        // A model download only stages files. Configuring its runtime and GPU
+        // is an explicit operation from resource management.
       }
     }catch(error){throw explainDownloadError(error,asset.url,asset.name)}finally{if(!isWithin(this.storageRoot,staging)||!staging.startsWith(join(this.storageRoot,'.download-')))throw new Error('拒绝清理非 ASR 临时目录');await rm(staging,{recursive:true,force:true})}
   }

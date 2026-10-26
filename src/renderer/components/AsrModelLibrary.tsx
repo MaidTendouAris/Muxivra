@@ -1,34 +1,89 @@
-import { tr } from '../lib/i18n'
-import { useEffect,useRef,useState } from 'react'
-import { ArrowLeft,Download,FolderOpen,Plus,RefreshCw,Zap,Network } from 'lucide-react'
-import { officialAsrCatalog,type ManagedAsrAsset } from '../../shared/asr-catalog'
-import { nvidiaProfile,type AsrDeploymentRequest } from '../../shared/asr-deployment'
-import type { AsrState,AsrModel } from '../../shared/asr'
+import { useState } from 'react'
+import { ArrowRight, Download, FolderOpen, Plus, Settings2, Trash2, WandSparkles } from 'lucide-react'
+import { officialAsrCatalog, type ManagedAsrAsset } from '../../shared/asr-catalog'
+import type { AsrState, AsrModel } from '../../shared/asr'
+import type { Job } from '../../shared/types'
+import { asrBackendLabels, pythonAsrBackends } from '../../shared/asr-parameters'
 import type { RunAction } from './Jobs'
-import { Button,Card,Field,Select,Modal,Busy } from './ui'
+import { Button, Card, Field, Input, Select, Modal } from './ui'
 import { AsrTransfer } from './AsrTransfer'
-import { DownloadNetworkStatus } from './DownloadNetworkStatus'
-import type { DownloadNetworkReport } from '../../shared/download-network'
 import { formatBytes } from '../lib/utils'
-export function AsrModelLibrary({state,run,busy,onBack,onEnvironment,onImport,onBound}:{state?:AsrState;run:RunAction;busy:boolean;onBack:()=>void;onEnvironment:()=>void;onImport:()=>void;onBound:(model:AsrModel)=>void}){
-  const [binding,setBinding]=useState<ManagedAsrAsset>(),[environmentId,setEnvironmentId]=useState(''),[runtimeId,setRuntimeId]=useState(''),[gpuIndex,setGpuIndex]=useState(0),[aligner,setAligner]=useState(true),[detecting,setDetecting]=useState(false)
-  const [network,setNetwork]=useState<DownloadNetworkReport>(),[checkingNetwork,setCheckingNetwork]=useState(false)
-  const checkNetwork=()=>run(async()=>{setCheckingNetwork(true);try{setNetwork(await window.muxivra.asrCheckNetwork())}finally{setCheckingNetwork(false)}})
-  const seen=useRef(state?.deployment?.phase==='completed'?state.deployment.startedAt:undefined)
-  const transferring=!!state?.download.active||!!state?.deployment?.active,nvidia=state?.nvidia,gpu=nvidia?.devices.find(value=>value.index===gpuIndex)
-  let issue=nvidia?.issue;if(gpu)try{nvidiaProfile(gpu)}catch(error){issue=(error as Error).message}
-  const detect=()=>run(async()=>{setDetecting(true);try{const result=await window.muxivra.asrDetectNvidia();setGpuIndex(result.devices.slice().sort((a,b)=>b.freeBytes-a.freeBytes)[0]?.index??0)}finally{setDetecting(false)}})
-  useEffect(()=>{if(!state?.nvidia)void detect()},[])
-  useEffect(()=>{const value=state?.deployment;if(value?.phase==='completed'&&value.startedAt!==seen.current){seen.current=value.startedAt;const model=state?.models.find(model=>model.id===value.modelId);if(model)onBound(model)}},[state?.deployment?.phase,state?.deployment?.startedAt,state?.models])
-  const bind=(asset:ManagedAsrAsset)=>{setBinding(asset);setEnvironmentId(state?.environments?.find(e=>e.backend===asset.backend&&e.probe?.ready)?.id??state?.environments?.find(e=>e.backend===asset.backend)?.id??'');setRuntimeId(state?.runtimes[0]?.id??'')}
-  const deploy=(assetId:AsrDeploymentRequest['assetId'])=>run(()=>window.muxivra.asrDeployNvidia({assetId,gpuIndex,includeAligner:aligner}))
-  const automatic=[{id:'whisper-large-v3',name:'Whisper large-v3',bytes:3095033483,detail:tr("whisper.cpp · 多语言识别与时间戳")},...officialAsrCatalog.filter(asset=>asset.role==='model').map(asset=>({...asset,detail:asset.backend==='qwen3-asr'?tr("Qwen3-ASR · 可选词级对齐"):tr("MOSS · 原生时间戳与说话人")}))]
-  return <div className="asr-secondary"><div className="subtitle-secondary-heading"><Button variant="ghost" onClick={onBack}><ArrowLeft size={16}/>{tr("返回 ASR 工作台")}</Button><h2>{tr("模型下载与部署")}</h2></div>
-    <Card title={tr("NVIDIA 一键部署")} aside={<div className="toolbar"><Button size="sm" variant="secondary" loading={checkingNetwork} loadingText={tr("检查网络…")} disabled={transferring} onClick={checkNetwork}><Network size={15}/>{tr("检查下载网络")}</Button><Button size="sm" variant="secondary" disabled={detecting||transferring} onClick={detect}><RefreshCw size={15}/>{tr("检测 GPU")}</Button></div>}><p className="hint">{tr("自动准备独立 Python、CUDA 依赖与官方模型，检查 GPU 后直接启用。面向仍获完整驱动支持的 NVIDIA 型号；不需要自行选择 Python 或安装 CUDA Toolkit。")}</p>{detecting?<Busy text={tr("读取 NVIDIA 设备与驱动…")}/>:<div className="form-grid"><Field label={tr("部署使用的 NVIDIA GPU")}><Select value={gpuIndex} onChange={e=>setGpuIndex(Number(e.target.value))} disabled={transferring}><option value={-1}>{tr("请选择可用 NVIDIA GPU")}</option>{nvidia?.devices.map(device=><option key={device.uuid} value={device.index}>{device.name} · {formatBytes(device.totalBytes)}</option>)}</Select></Field><div className="asr-gpu-summary">{gpu&&<><strong>{tr("驱动")}{gpu.driver}</strong><small className="hint">{tr("当前可用显存")}{formatBytes(gpu.freeBytes)} {tr("· 计算能力")}{gpu.computeMajor}.{gpu.computeMinor}</small></>}</div></div>}{issue&&<p className="error-inline">{issue}</p>}<label className="checkbox-row"><input type="checkbox" checked={aligner} disabled={transferring} onChange={e=>setAligner(e.target.checked)}/>{tr("Qwen 同时部署词级对齐模型（约 1.7 GiB，生成可打轴初稿）")}</label><p className="path-text">{tr("存储位置：")}{state?.storageRoot}</p><p className="hint">{tr("Python、环境、模型、下载缓存和临时文件均位于此处。Qwen 与 MOSS 使用各自独立环境；空间不足时停止，不转存 C 盘。")}</p><AsrTransfer state={state} run={run}/></Card>
-    {network&&<DownloadNetworkStatus report={network} run={run}/>}<div className="asr-asset-grid">{automatic.map(asset=><article className="card asr-asset-card" key={asset.id}><div className="card-heading"><strong>{asset.name}</strong><Zap size={18}/></div><span className="hint">{asset.detail}</span><span className="hint">{tr("模型约")}{formatBytes(asset.bytes)} {tr("· 首次需额外下载运行依赖")}</span>{gpu&&asset.bytes>gpu.totalBytes*.65&&<small className="hint">{tr("此模型可能占用较多显存，长音频可降低批次或使用兼容分片。")}</small>}<Button disabled={busy||transferring||detecting||!gpu||!!issue} onClick={()=>deploy(asset.id as AsrDeploymentRequest['assetId'])}><Download size={16}/>{state?.models.some(model=>model.nvidiaDeviceUuid===gpu?.uuid&&model.modelPath===state.assets?.find(value=>value.id===asset.id)?.path)?tr("检查与修复部署"):tr("一键安装部署")}</Button></article>)}</div>
-    <details className="asr-manual-settings"><summary>{tr("兼容与手动配置")}</summary><div className="asr-manual-content"><Card title={tr("自定义环境与模型")}><p className="hint">{tr("CPU、旧显卡、自有 Python 或其他后端可继续手动配置。仅下载模型不会自动改变已有环境。")}</p><div className="toolbar"><Button variant="secondary" disabled={busy||transferring} onClick={onImport}><FolderOpen size={16}/>{tr("导入本地模型")}</Button><Button variant="secondary" onClick={onEnvironment}>{tr("手动管理运行环境")}</Button></div></Card>
-      <Card title={tr("仅下载官方模型")}><div className="asr-asset-grid"><article className="inner-card asr-asset-card"><strong>Whisper large-v3</strong><span className="hint">{tr("ggerganov/whisper.cpp · 约 2.88 GiB")}</span><Button variant="secondary" disabled={busy||transferring||state?.assets?.some(a=>a.id==='whisper-large-v3')} onClick={()=>run(()=>window.muxivra.asrDownload('model'))}><Download size={16}/>{tr("下载 Whisper 模型")}</Button></article>{officialAsrCatalog.map(asset=><article key={asset.id} className="inner-card asr-asset-card"><strong>{asset.name}</strong><span className="hint">{asset.backend==='qwen3-asr'?tr("Hugging Face / 官方 ModelScope"):'Hugging Face'} · {asset.repo} · {formatBytes(asset.bytes)}</span><Button variant="secondary" disabled={busy||transferring||state?.assets?.some(value=>value.id===asset.id)} onClick={()=>run(()=>window.muxivra.asrDownloadModel(asset.id))}><Download size={16}/>{state?.assets?.some(value=>value.id===asset.id)?tr("已下载"):tr("下载模型")}</Button></article>)}</div></Card>
-      <Card title={tr("已下载资源")}><div className="asr-environment-list">{state?.assets?.map(asset=><article key={asset.id} className="inner-card asr-asset-card"><div className="card-heading"><strong>{asset.name}</strong><span className="hint">{formatBytes(asset.bytes)}</span></div><p className="path-text">{asset.path}</p>{asset.role==='model'?<Button variant="secondary" size="sm" disabled={busy||transferring} onClick={()=>bind(asset)}><Plus size={15}/>{tr("绑定运行环境并使用")}</Button>:<Button variant="secondary" size="sm" onClick={onEnvironment}>{tr("在运行环境中选择")}</Button>}</article>)}</div>{!state?.assets?.length&&<p className="hint">{tr("暂无下载资源。")}</p>}</Card></div></details>
-    {binding&&<Modal title={tr("绑定模型运行环境")} onClose={()=>setBinding(undefined)}><strong>{binding.name}</strong>{binding.backend==='whisper.cpp'?<Field label={tr("模型运行包")}><Select value={runtimeId} onChange={e=>setRuntimeId(e.target.value)}><option value="">{tr("请先下载运行包")}</option>{state?.runtimes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</Select></Field>:<Field label={tr("模型运行环境")}><Select value={environmentId} onChange={e=>setEnvironmentId(e.target.value)}><option value="">{tr("请先配置对应环境")}</option>{state?.environments?.filter(e=>e.backend===binding.backend).map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</Select></Field>}<div className="toolbar"><Button variant="secondary" onClick={()=>{setBinding(undefined);onEnvironment()}}>{tr("管理运行环境")}</Button><Button disabled={busy||(binding.backend==='whisper.cpp'?!runtimeId:!environmentId)} onClick={()=>run(async()=>{const model=await window.muxivra.asrBindAsset(binding.id,environmentId||undefined,runtimeId||undefined);setBinding(undefined);onBound(model)})}>{tr("使用模型")}</Button></div></Modal>}
+import { tr } from '../lib/i18n'
+
+type ImportBackend = 'whisper.cpp' | 'qwen3-asr' | 'moss-transcribe-diarize' | 'custom'
+export function AsrModelLibrary({ state, jobs = [], run, busy, onEnvironment, onRecognition }: { state?: AsrState; jobs?: Job[]; run: RunAction; busy: boolean; onEnvironment: (assetId?: string) => void; onRecognition: (id: string) => void }) {
+  const [binding, setBinding] = useState<ManagedAsrAsset>()
+  const [environmentId, setEnvironmentId] = useState('')
+  const [runtimeId, setRuntimeId] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [backend, setBackend] = useState<ImportBackend>('whisper.cpp')
+  const [name, setName] = useState('Whisper large-v3')
+  const [removing, setRemoving] = useState<AsrModel>()
+  const transferring = !!state?.download.active || !!state?.deployment?.active
+  const activeModels = new Set(jobs.flatMap(job => ['queued', 'running', 'paused'].includes(job.status) && job.plan.kind === 'asr' ? [job.plan.asr.model.id] : []))
+  const assets = state?.assets ?? []
+  const catalog = [{ id: 'whisper-large-v3', name: 'Whisper large-v3', backend: 'whisper.cpp', role: 'model', repo: 'ggerganov/whisper.cpp', bytes: 3095033483 }, ...officialAsrCatalog]
+  const bind = (asset: ManagedAsrAsset) => {
+    setBinding(asset)
+    setEnvironmentId(state?.environments?.find(value => value.backend === asset.backend && value.probe?.ready)?.id ?? '')
+    setRuntimeId((state?.runtimes.find(value => value.id.endsWith('-cuda')) ?? state?.runtimes[0])?.id ?? '')
+  }
+  const importModel = () => run(async () => {
+    if (backend === 'custom') {
+      const model = await window.muxivra.asrImport({ backend, name })
+      if (model) setImporting(false)
+      return model
+    }
+    const asset = await window.muxivra.asrImportModelAsset({ backend, name })
+    if (asset) setImporting(false)
+    return asset
+  }, tr('模型文件已导入'))
+  return <div className="resource-asr-grid">
+    <Card className="resource-pane" title={tr('已配置模型')} aside={<span className="hint">{state?.models.length ?? 0}</span>}>
+      <div className="resource-scroll">
+        <p className="hint resource-intro">{tr('在此保存模型的识别参数。可用模型会直接出现在 ASR 工作台，工作台只需选择项目与识别区间。')}</p>
+        <div className="resource-model-list">{state?.models.map(model => <article className="inner-card resource-model-card" key={model.id}>
+          <div className="card-heading"><strong>{model.name}</strong><span className={`status ${model.availability === 'missing' ? 'status-failed' : 'status-completed'}`}>{model.availability === 'missing' ? tr('不可用') : tr('可用')}</span></div>
+          <span className="hint">{tr(asrBackendLabels[model.backend])} · {model.environment?.name ?? (model.backend === 'whisper.cpp' ? 'whisper.cpp' : tr('自定义程序'))}</span>
+          <p className="path-text" title={model.modelPath}>{model.modelPath}</p>
+          <div className="resource-recognition-summary"><span>{tr('语言')} <strong>{model.recognition?.language ?? 'auto'}</strong></span><span>{tr('计算设备')} <strong>{model.recognition?.device ?? 'auto'}</strong></span><span>{tr('精度')} <strong>{String(model.recognition?.parameters?.dtype ?? (model.backend === 'whisper.cpp' ? 'GGML' : 'auto'))}</strong></span></div>
+          {model.issue && <p className="error-inline">{tr(model.issue)}</p>}
+          <div className="toolbar wrap"><Button size="sm" variant="secondary" disabled={busy || activeModels.has(model.id)} onClick={() => onRecognition(model.id)}><Settings2 size={15}/>{tr('配置识别参数')}</Button><Button size="sm" variant="ghost" onClick={() => onEnvironment(assets.find(asset => asset.path === model.modelPath)?.id)}>{tr('运行环境')}<ArrowRight size={14}/></Button><Button size="icon" variant="ghost" aria-label={tr('移除模型记录')} title={tr('移除模型记录')} disabled={busy || transferring || activeModels.has(model.id)} onClick={() => setRemoving(model)}><Trash2 size={15}/></Button></div>
+        </article>)}</div>
+        {!state?.models.length && <div className="resource-empty"><Settings2 size={28}/><strong>{tr('尚无可直接使用的模型')}</strong><p>{tr('先下载或导入模型文件，再到环境页为目标模型配置运行环境。')}</p></div>}
+      </div>
+    </Card>
+    <Card className="resource-pane" title={tr('模型文件')} aside={<Button size="sm" variant="secondary" disabled={busy || transferring} onClick={() => setImporting(true)}><FolderOpen size={15}/>{tr('导入模型')}</Button>}>
+      <div className="resource-scroll">
+        <p className="hint resource-intro">{tr('下载与导入只准备文件。模型文件、辅助模型及缓存均位于安装目录；配置环境时使用这些已有文件。')}</p>
+        <AsrTransfer state={state} run={run}/>
+        <div className="resource-subheading"><strong>{tr('官方模型')}</strong><span className="hint">Hugging Face / ModelScope</span></div>
+        <div className="resource-catalog-grid">{catalog.map(asset => {
+          const installed = assets.find(value => value.id === asset.id)
+          return <article className="inner-card resource-catalog-card" key={asset.id}>
+            <div className="card-heading"><strong>{asset.name}</strong><span className="tag">{asset.role === 'model' ? tr('模型') : tr('词级对齐')}</span></div>
+            <span className="hint">{asset.repo} · {formatBytes(asset.bytes)}</span>
+            {installed ? <><p className="path-text" title={installed.path}>{installed.path}</p><span className="status status-completed">{tr('文件已就绪')}</span></> : <Button size="sm" variant="secondary" disabled={busy || transferring} onClick={() => run(() => asset.id === 'whisper-large-v3' ? window.muxivra.asrDownload('model') : window.muxivra.asrDownloadModel(asset.id))}><Download size={15}/>{tr('下载模型文件')}</Button>}
+            {asset.role === 'aligner' && <Button size="sm" variant="ghost" disabled={busy || transferring} onClick={() => run(() => window.muxivra.asrImportComponent('aligner'), tr('对齐模型已导入'))}><FolderOpen size={15}/>{tr('导入对齐模型')}</Button>}
+          </article>
+        })}</div>
+        <div className="resource-subheading"><strong>{tr('已下载与导入的文件')}</strong><span className="hint">{assets.length}</span></div>
+        <div className="resource-staged-list">{assets.map(asset => <article className="inner-card resource-staged-card" key={asset.id}>
+          <div className="card-heading"><strong>{asset.name}</strong><span className="hint">{formatBytes(asset.bytes)}</span></div>
+          <p className="path-text">{asset.path}</p>
+          {asset.role === 'model' ? <div className="toolbar wrap"><Button size="sm" variant="secondary" disabled={busy || transferring} onClick={() => onEnvironment(asset.id)}><WandSparkles size={15}/>{tr('配置此模型环境')}</Button><Button size="sm" variant="ghost" disabled={busy || transferring} onClick={() => bind(asset)}><Plus size={15}/>{tr('使用已有环境')}</Button></div> : <span className="hint">{tr('配置 Qwen 环境时可选用此对齐模型。')}</span>}
+        </article>)}</div>
+        {!assets.length && <p className="hint">{tr('暂无已下载或导入的模型文件。')}</p>}
+      </div>
+    </Card>
+    {importing && <Modal title={tr('导入 ASR 模型文件')} locked={busy} onClose={() => setImporting(false)}>
+      <Field label={tr('后端类型')}><Select value={backend} onChange={event => { const next = event.target.value as ImportBackend; setBackend(next); setName(asrBackendLabels[next]) }}><option value="whisper.cpp">{tr('whisper.cpp · GGML 模型')}</option>{pythonAsrBackends.map(value => <option key={value} value={value}>{asrBackendLabels[value]} · Python</option>)}<option value="custom">{tr('自定义后端 · JSON 配置')}</option></Select></Field>
+      {backend !== 'custom' && <Field label={tr('模型名称')}><Input value={name} onChange={event => setName(event.target.value)}/></Field>}
+      <p className="hint">{backend === 'custom' ? tr('选择 muxivra-asr-backend v1 配置，使用配置指定的本地后端。') : backend === 'whisper.cpp' ? tr('选择 whisper.cpp 格式的 .bin 模型文件，运行包可稍后在环境页准备。') : tr('选择包含 config.json 和完整权重的本地模型目录，无需预先配置 Python。')}</p>
+      <p className="hint">{tr('导入文件复制至安装目录，原文件保留。')}</p><AsrTransfer state={state} run={run}/>
+      <div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => setImporting(false)}>{tr('取消')}</Button><Button disabled={busy || transferring || backend !== 'custom' && !name.trim()} loadingText={tr('正在导入…')} onClick={importModel}><FolderOpen size={16}/>{tr('选择文件并导入')}</Button></div>
+    </Modal>}
+    {binding && <Modal title={tr('使用已有环境')} onClose={() => setBinding(undefined)}><strong>{binding.name}</strong>{binding.backend === 'whisper.cpp' ? <Field label={tr('模型运行包')}><Select value={runtimeId} onChange={event => setRuntimeId(event.target.value)}><option value="">{tr('请先准备运行包')}</option>{state?.runtimes.map(runtime => <option key={runtime.id} value={runtime.id}>{runtime.name}</option>)}</Select></Field> : <Field label={tr('模型运行环境')}><Select value={environmentId} onChange={event => setEnvironmentId(event.target.value)}><option value="">{tr('请选择已验证可用的环境')}</option>{state?.environments?.filter(environment => environment.backend === binding.backend && environment.probe?.ready).map(environment => <option key={environment.id} value={environment.id}>{environment.name}</option>)}</Select></Field>}<div className="toolbar"><Button variant="secondary" onClick={() => { setBinding(undefined); onEnvironment(binding.id) }}>{tr('前往配置环境')}</Button><Button disabled={busy || (binding.backend === 'whisper.cpp' ? !runtimeId : !environmentId)} onClick={() => run(async () => { await window.muxivra.asrBindAsset(binding.id, environmentId || undefined, runtimeId || undefined); setBinding(undefined) }, tr('模型已配置，可在 ASR 工作台使用'))}>{tr('启用模型')}</Button></div></Modal>}
+    {removing && <Modal title={tr('移除模型记录')} onClose={() => setRemoving(undefined)}><p>{tr('移除此模型的配置记录？模型文件和运行程序会保留。')}</p><div className="toolbar"><Button variant="secondary" onClick={() => setRemoving(undefined)}>{tr('取消')}</Button><Button disabled={busy || transferring || activeModels.has(removing.id)} onClick={() => run(async () => { await window.muxivra.asrRemoveModel(removing.id); setRemoving(undefined) })}>{tr('移除记录')}</Button></div></Modal>}
   </div>
 }

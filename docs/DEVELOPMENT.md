@@ -44,7 +44,7 @@ npm run smoke:update
 
 集成及桌面测试需要可调用的外部 FFmpeg，用于生成临时媒体。报告与截图保存到 `artifacts/qa/`，配置和数据在 `.test-data/` 中隔离。实际验收结果、安装版验证和下载测试开关见 [验收记录](VERIFICATION.md)。
 
-`npm run prepare:mpv` 按固定清单下载与校验 Windows x64 播放器，只有 mpv.exe 被解压，原始许可证存放于独立目录并随包提供。下载文件缓存于 `.runtime/`，运行文件位于忽略目录 `resources/mpv/`。不使用 PATH 中的 mpv，也不运行上游安装或更新脚本。
+`npm run prepare:mpv` 按固定清单下载并校验 Windows x64 libmpv DLL，以及仅供无画面集成测试使用的 CLI。安装包只包含 libmpv-2.dll，不包含 mpv.exe。缓存位于 .runtime/，运行文件位于忽略目录 resources/mpv/。不使用 PATH 中的 mpv，不运行上游安装或更新脚本。运行时需要固定版本的 D3D11 Render API；不使用原生子窗口。共享纹理接口为实验性 API，升级依赖时必须执行实际像素/遮罩、字幕全屏、颜色和项目生命周期回归。
 
 `npm run dev` 准备播放器后启动 electron-vite；`npm run build` 包含类型检查和三端构建。`npm run package:win` 准备播放器并生成 Windows x64 安装包、便携包及依赖许可清单。`scripts/icons.mjs` 可重新生成应用 PNG/ICO。`node scripts/verify-release.mjs` 逐文件比较便携 ZIP 与已验证的解包目录，并检查版本、安装 EXE 和更新元数据；详细自动化入口见 [构建与发布](RELEASING.md)。
 

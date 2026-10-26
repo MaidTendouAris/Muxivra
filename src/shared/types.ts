@@ -33,6 +33,7 @@ export interface TranscodeOptions {
 export interface Preset { id: string; name: string; description: string; options: TranscodeOptions }
 export interface JobRequest { inputPath: string; outputPath: string; options: TranscodeOptions }
 export interface Plan {
+  commandEdited?:boolean
   projectId?: string
   kind?: 'transcode'
   input: MediaInfo; outputPath: string; options: TranscodeOptions; args: string[]; engine: Engine; warnings: string[]
@@ -81,9 +82,22 @@ export interface McpSkillSummary { id:string; name:string; description:string; u
 export interface McpSkillDocument extends McpSkillSummary { markdown:string; parameterReference?:unknown }
 export interface McpSetupInfo { executablePath?:string; version:string; running:boolean; skills:McpSkillSummary[] }
 export interface MuxivraApi {
+  mediaMetadata(path:string):Promise<import('./media-metadata').MediaMetadata>
+  importLyrics():Promise<string|undefined>
+  reviewCommand(request:JobRequest,command:string):Promise<{plan:Plan;reviewId:string}>
+  submitCommand(reviewId:string):Promise<Job[]>
+  openSourceEditor(request?:{path?:string}):Promise<void>
+  saveSourceSubtitle(document:SubtitleDocument,text:string,hash:string):Promise<SubtitleDocument>
+  videoFrames(path:string):Promise<import('./video-timing').VideoTiming>
+  videoFrameProgress():Promise<number>
+  cancelVideoFrames():Promise<void>
+  importSubtitleStyles(path:string):Promise<import('./subtitles').SubtitleStyle[]>
+  subtitleTools():Promise<import('./subtitle-tools').SubtitleToolsState>
+  saveSubtitleTools(value:import('./subtitle-tools').SubtitleToolsState):Promise<void>
   onSubtitleEditorRequest(handler:(request:import('./subtitle-mcp').SubtitleEditorRequest)=>Promise<import('./subtitle-mcp').SubtitleEditorState>):()=>void
   importProject(request:import('./projects').ProjectImportRequest):Promise<import('./projects').ProjectImportResult>
   cancelProjectImport():Promise<void>
+  rebuildProjectAnalysis(id:string):Promise<void>
   openProject(id:string):Promise<SubtitleDocument>
   closeProject(id:string):Promise<void>
   renameProject(id:string,name:string):Promise<void>
@@ -101,9 +115,17 @@ export interface MuxivraApi {
   asrRefreshEnvironment(id:string):Promise<import('./asr-environments').AsrEnvironment>
   asrDiscoverPython():Promise<void>
   asrDetectNvidia():Promise<import('./asr-deployment').NvidiaDetection>
+  asrDeploymentPlan(request:import('./asr-deployment').AsrDeploymentRequest):Promise<import('./asr-deployment').AsrDeploymentPlan>
   asrDeployNvidia(request:import('./asr-deployment').AsrDeploymentRequest):Promise<void>
+  asrDownloadResource(request:import('./asr-deployment').AsrResourceRequest):Promise<void>
+  asrImportResource(request:import('./asr-deployment').AsrResourceRequest):Promise<void>
+  asrConfigureModel(request:import('./asr-deployment').AsrConfigureModelRequest):Promise<void>
+  asrImportModelAsset(request:{name:string;backend:'whisper.cpp'|'qwen3-asr'|'moss-transcribe-diarize'}):Promise<import('./asr-catalog').ManagedAsrAsset|undefined>
   asrCancelDeployment():Promise<void>
   asrDeploymentLog():Promise<string>
+  downloadSources():Promise<import('./download-sources').DownloadSourceState>
+  saveDownloadSources(configuration:import('./download-sources').DownloadSources,revision:string):Promise<import('./download-sources').DownloadSourceState>
+  mcpActivity(page:number):Promise<import('./mcp-activity').McpActivityPage>
   asrCheckNetwork():Promise<import('./download-network').DownloadNetworkReport>
   asrDownloadModel(id:string):Promise<void>
   asrBindAsset(id:string,environmentId?:string,runtimeId?:string):Promise<import('./asr').AsrModel>

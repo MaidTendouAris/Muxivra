@@ -5,7 +5,8 @@ import { waveformRequestSchema,type WaveformRequest,type WaveformWindow } from '
 
 /** Decode a bounded viewport rather than downsampling the entire movie. */
 export async function makeWaveform(engine:Engine,media:MediaInfo,input:Partial<WaveformRequest>={},signal?:AbortSignal):Promise<WaveformWindow> {
-  const request=waveformRequestSchema.parse(input),audio=media.streams.find(s=>s.type==='audio')
+  const request=waveformRequestSchema.parse(input),audio=request.streamIndex==='no'?undefined:media.streams.find(s=>s.type==='audio'&&(request.streamIndex===undefined||s.index===request.streamIndex))
+  if(typeof request.streamIndex==='number'&&!audio)throw new Error('Audio track does not exist')
   const sampleRate=48000,channels=Math.max(1,Math.min(8,audio?.channels??1))
   const result:WaveformWindow={...request,sampleRate,channels,hasAudio:!!audio,minimum:[],maximum:[],rms:[]}
   if(signal?.aborted)throw new Error('波形读取已取消')

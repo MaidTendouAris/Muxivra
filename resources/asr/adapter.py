@@ -180,6 +180,7 @@ def probe(backend, source=None):
             warnings.append("未安装可选量化依赖 " + package + "；自动/FP16/BF16/FP32 不受影响。")
     try:
         torch = importlib.import_module("torch")
+        versions["cuda"] = str(torch.version.cuda) if torch.version.cuda else "CPU"
         cuda = torch.cuda.is_available()
         if cuda:
             for index in range(torch.cuda.device_count()):

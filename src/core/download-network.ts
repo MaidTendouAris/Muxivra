@@ -1,3 +1,4 @@
+import { resolveDownloadSource } from './download-sources'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { DownloadNetworkReport,DownloadNetworkRoute } from '../shared/download-network'
 
@@ -24,6 +25,7 @@ export function explainDownloadError(error:unknown,url:string,label:string):Erro
   return new DownloadFailure(`${label}：${hint}\n地址：${safeDownloadUrl(url)}\n原因：${details}`,!certificate)
 }
 export async function fetchDownload(url:string,options:{signal:AbortSignal;label:string;timeoutMs?:number;method?:'GET'|'HEAD';attempts?:number;onRetry?:(message:string)=>void}):Promise<Response>{
+  url=resolveDownloadSource(url)
   const {signal,label}=options,deadline=AbortSignal.any([signal,AbortSignal.timeout(options.timeoutMs??7200000)]),attempts=options.attempts??3
   for(let attempt=1;;attempt++){
     deadline.throwIfAborted()
@@ -68,7 +70,8 @@ const diagnosticSources=[
 let checking:Promise<DownloadNetworkReport>|undefined
 export function checkDownloadNetwork():Promise<DownloadNetworkReport>{
   if(checking)return checking
-  checking=(async()=>({checkedAt:new Date().toISOString(),transport:transport?.name??'Node.js HTTP',checks:await Promise.all(diagnosticSources.map(async([name,url])=>{
+  checking=(async()=>({checkedAt:new Date().toISOString(),transport:transport?.name??'Node.js HTTP',checks:await Promise.all(diagnosticSources.map(async([name,originalUrl])=>{
+    const url=resolveDownloadSource(originalUrl)
     const start=Date.now();let route:DownloadNetworkRoute|undefined
     try{
       if(transport?.trace){route=await transport.trace(url,AbortSignal.timeout(15000));if(route.error)throw explainDownloadError(new Error(route.error),route.hops.at(-1)?.url??url,name);if(!route.status||route.status<200||route.status>=300)throw new Error(`${name}：HTTP ${route.status??'无响应'}`);return {name,url,ok:true,elapsedMs:Date.now()-start,message:`HTTP ${route.status}`,route}}

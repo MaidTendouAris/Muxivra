@@ -1,0 +1,24 @@
+.color-modal { width:min(390px,calc(100vw - 32px)); }
+body:has(.color-picker[data-screen-picking="true"]) :is(.color-modal,.modal-backdrop) { visibility:hidden;pointer-events:none; }
+.color-picker { display:grid;gap:13px; }
+.color-sv-wrap { position:relative;height:190px; }
+.color-sv { display:block;width:100%;height:100%;border-radius:7px;cursor:crosshair;touch-action:none; }
+.color-sv-cursor { position:absolute;width:13px;height:13px;border:2px solid white;border-radius:50%;box-shadow:0 0 0 1px #222,0 1px 3px #0008;transform:translate(-50%,-50%);pointer-events:none; }
+.color-hue,.color-alpha { height:15px;border-radius:8px;position:relative;cursor:crosshair;touch-action:none; }
+.color-hue { background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00); }
+.color-hue>span,.color-alpha>span { position:absolute;top:-3px;width:10px;height:21px;border:2px solid var(--text);background:var(--surface);box-shadow:0 0 0 1px #0005;border-radius:4px;transform:translateX(-50%);pointer-events:none; }
+.color-alpha { background-image:linear-gradient(to right,var(--selected-color),transparent),conic-gradient(#ccc 25%,#fff 0 50%,#ccc 0 75%,#fff 0);background-size:100%,10px 10px; }
+.color-preview-row { display:flex;align-items:center;justify-content:space-between;gap:12px; }
+.color-preview-pair { display:flex;gap:8px; }
+.color-preview-pair>div { display:grid;gap:3px;justify-items:center;color:var(--muted);font-size:11px; }
+.color-preview { width:42px;height:29px;display:block;border-radius:5px;border:1px solid var(--border); }
+.color-rgb-fields { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px; }
+.color-rgb-fields:has(.field:nth-child(4)) { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.color-picker .field { margin:0; }
+.color-picker .field>span { font-size:12px; }
+.color-picker .input { min-height:34px;font-size:13px;font-variant-numeric:tabular-nums; }
+.color-picker .hint,.color-picker .error-inline { margin:0;font-size:12px; }
+.color-picker-actions { display:flex;justify-content:flex-end;gap:8px;padding-top:8px;border-top:1px solid var(--border); }
+.subtitle-colour-button { display:flex;width:100%;gap:8px;align-items:center;justify-content:flex-start;font-variant-numeric:tabular-nums; }
+.subtitle-colour-button>i { width:26px;height:21px;border:1px solid var(--border);border-radius:4px;flex-shrink:0; }
+.subtitle-colour-button>small { margin-left:auto;color:var(--muted);font-size:11px; }

@@ -73,7 +73,7 @@ await new Promise((done, reject) => {
   })
 })
 for (const name of expected.keys()) assert.ok(names.has(name), `Missing file in ZIP: ${name}`)
-for (const name of ['Muxivra.exe', 'resources/app.asar', 'resources/mpv/mpv.exe', 'resources/asr/adapter.py', 'resources/app-update.yml']) assert.ok(names.has(name), name)
+for (const name of ['Muxivra.exe', 'resources/app.asar', 'resources/mpv/libmpv-2.dll', 'resources/asr/adapter.py', 'resources/app-update.yml']) assert.ok(names.has(name), name)
 const assets = [installerName, portableName, 'latest.yml']
 const report = { version, tag: tag || null, portableFiles: names.size, assets: await Promise.all(assets.map(async name => ({ name, sha256: await hash(createReadStream(join(directory, name))) }))) }
 await mkdir('artifacts/qa', { recursive: true })
