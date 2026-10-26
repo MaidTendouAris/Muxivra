@@ -25,7 +25,7 @@ const current=()=>source.evaluate(()=>window.sourceEditor.read())
 const drafts=async()=>{const directory=join(profile,'source-editor-drafts');let names;try{names=await readdir(directory)}catch(error){if(error.code==='ENOENT')return [];throw error}return Promise.all(names.sort().map(async name=>({name,text:await readFile(join(directory,name),'utf8')})))}
 const session=()=>page.evaluate(()=>window.muxivra.getSession())
 const waitFile=path=>until(()=>current().then(file=>file?.path===path),'Switch to '+basename(path))
-const edit=async value=>{await source.locator('.monaco-editor textarea').focus();await source.keyboard.press('Control+a');await source.keyboard.insertText(value)}
+const edit=async value=>{await until(()=>source.getByRole('button',{name:'打开文本文件',exact:true}).isEnabled(),'Editor switch settled');await source.locator('.monaco-editor textarea').focus();await source.keyboard.press('Control+a');await source.keyboard.insertText(value)}
 const editCue=async(nextText,previousText)=>{const state=await current();assert.ok(state?.text.includes(previousText),'Fixture cue must exist');await edit(state.text.replace(previousText,nextText))}
 const waitSaved=()=>until(()=>source.getByTestId('source-save-status').innerText().then(value=>value==='已保存'),'Save status')
 const requestNativeClose=()=>desktop.evaluate(({BrowserWindow})=>{const sourceWindow=BrowserWindow.getAllWindows().find(window=>window.webContents.getURL().includes('window=source-editor'));if(!sourceWindow)throw new Error('Source window not found');sourceWindow.close()})
