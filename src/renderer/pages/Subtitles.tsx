@@ -235,7 +235,7 @@ export function Subtitles({run,busy:externalBusy,visible,onBeforeLeave,onBeforeE
       else if(matchShortcut(event,'subtitles.undo',shortcuts)){event.preventDefault();undo()}
       else if(matchShortcut(event,'subtitles.redo',shortcuts)){event.preventDefault();redo()}
       else if((event.target as Element)?.closest('.subtitle-event-table')){
-        if((event.ctrlKey||event.metaKey)&&event.code==='KeyA'){event.preventDefault();setSelection(rows.map(row=>row.item.id))}
+        if((event.ctrlKey||event.metaKey)&&event.code==='KeyA'){event.preventDefault();setFollowPlayback(false);setWaveSelection(undefined);setSelection(rows.map(row=>row.item.id))}
         else if((event.ctrlKey||event.metaKey)&&event.code==='KeyC'){event.preventDefault();void run(copy)}
         else if((event.ctrlKey||event.metaKey)&&event.code==='KeyV'){event.preventDefault();void run(paste)}
         else if(event.code==='Delete'&&selection.length){event.preventDefault();setDeleteConfirm(true)}
